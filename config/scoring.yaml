@@ -1,0 +1,14 @@
+weights:
+  industry_fit: 35
+  local_focus: 20
+  network_affinity: 15
+  contactability: 10
+confidence:
+  base: 0.9
+  ambiguous_match_penalty: 0.5
+  missing_address_penalty: 0.25
+  missing_contact_penalty: 0.2
+ranks:
+  A: 60
+  B: 35
+  C: 0
