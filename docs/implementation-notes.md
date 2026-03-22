@@ -28,3 +28,4 @@ powershell -ExecutionPolicy Bypass -File .\scripts\approachlist.ps1 report-statu
 
 - The current implementation is fixture-based and avoids live crawling.
 - Because Python is not available in this environment, the CLI is implemented in PowerShell while preserving the planned inputs and outputs.
+- `company_master.csv` now includes `contact_form_url` for fixture cases where the official site exposes a contact path.

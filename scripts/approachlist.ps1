@@ -347,12 +347,14 @@ function Invoke-BuildCompanyMaster {
         $address = ""
         $phone = ""
         $website = ""
+        $contactFormUrl = ""
         $detailSource = ""
 
         if ($matchStatus -eq "exact" -and $null -ne $detail) {
             $address = [string]$detail.address
             $phone = [string]$detail.phone
             $website = [string]$detail.website
+            $contactFormUrl = [string]$detail.contact_form_url
             $detailSource = [string]$detail.detail_source_url
         }
 
@@ -365,6 +367,7 @@ function Invoke-BuildCompanyMaster {
             address           = $address
             phone             = $phone
             website           = $website
+            contact_form_url  = $contactFormUrl
             source_org        = $member.source_org
             source_url        = $member.source_url
             detail_source_url = $detailSource
