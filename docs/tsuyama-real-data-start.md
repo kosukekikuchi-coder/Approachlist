@@ -78,3 +78,18 @@
 - `local_focus`
 - `network_affinity`
 - `contactability`
+
+## 2026-03-23 ルール適用の試行結果
+- `お料理 わらうかど。`
+- `囲炉裏焼き あなみ`
+- `城下小宿 糀や`
+  の3社について、`industry_fit=0.5` を試行入力
+- 3社とも `contact_form_url` は、公式サイト上で問い合わせフォームを安全に確認できなかったため空欄のまま
+- 3社のスコアは `45 / B` から `62 / A` に上昇
+- `score_reason` は `Industry fit / Local focus / Community network signal / Reachable contact path` に変化
+
+## 2026-03-23 全件への展開
+- 同じ控えめな基準で、津山市の残り5社にも `industry_fit=0.5` を反映
+- 根拠は、津山商工会議所のミシュラン掲載事業所記事から、飲食・宿泊系の事業内容が読めること
+- 全8社が `priority_score=62` `priority_rank=A` に変化
+- `contact_form_url` は引き続き未入力のまま
