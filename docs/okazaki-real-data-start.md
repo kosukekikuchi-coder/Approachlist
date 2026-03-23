@@ -75,3 +75,11 @@
 - `local_focus`
 - `network_affinity`
 - `contactability`
+
+## 2026-03-23 ルール適用の展開
+- `株式会社中日図書` を除く 7社について、`industry_fit=0.5` を反映
+- あわせて、`local_focus=1` `network_affinity=1` `contactability=1` を反映
+- 根拠は、岡崎市所在地、岡崎南ロータリークラブ掲載、電話または問い合わせ導線の確認
+- 7社は再計算後、`priority_score=62` `priority_rank=A` に更新
+- `score_reason` は `Industry fit / Local focus / Community network signal / Reachable contact path`
+- `株式会社中日図書` は引き続き公開根拠不足のため `0 / C` のまま

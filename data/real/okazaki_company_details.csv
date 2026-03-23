@@ -1,9 +1,9 @@
 company_name,municipality,address,phone,website,contact_form_url,detail_source_url,industry_fit,local_focus,network_affinity,contactability
-有限会社磯貝彫刻,岡崎市,〒444-0936 愛知県岡崎市上佐々木町字西勝18-2,0564-31-4854,https://www.isocho.com,https://www.isocho.com/contact,https://www.isocho.com/campany,,,,
-合資会社旭軒元直,岡崎市,〒444-0045 愛知県岡崎市康生通東1-2,0564-22-0414,https://www.motonao.jp,https://www.motonao.jp/contact/index.php,https://www.motonao.jp/abouts/,,,,
-株式会社犬塚石材本店,岡崎市,〒444-0071 愛知県岡崎市稲熊町赤松6-13,0564-24-6358,https://inuzuka-stone.com,,https://inuzuka-stone.com/company,,,,
-太田油脂株式会社,岡崎市,〒444-0825 愛知県岡崎市福岡町字下荒追28,0564-51-9521,https://ota-oil.co.jp/,https://ota-oil.co.jp/contact/,https://ota-oil.co.jp/contact/,,,,
-ブラザー印刷株式会社,岡崎市,〒444-0834 愛知県岡崎市柱町字福部池1-200,0564-51-0651,https://brother-p.com/,https://site.brother-p.com/inquiry/,https://site.brother-p.com/inquiry/,,,,
-株式会社岡崎グリーン,岡崎市,〒444-0908 愛知県岡崎市橋目町字竹之内60番地1,0564-31-1131,https://okazaki-green.co.jp/,https://okazaki-green.co.jp/contact/,https://okazaki-green.co.jp/company/access.html,,,,
+有限会社磯貝彫刻,岡崎市,〒444-0936 愛知県岡崎市上佐々木町字西勝18-2,0564-31-4854,https://www.isocho.com,https://www.isocho.com/contact,https://www.isocho.com/campany,0.5,1,1,1
+合資会社旭軒元直,岡崎市,〒444-0045 愛知県岡崎市康生通東1-2,0564-22-0414,https://www.motonao.jp,https://www.motonao.jp/contact/index.php,https://www.motonao.jp/abouts/,0.5,1,1,1
+株式会社犬塚石材本店,岡崎市,〒444-0071 愛知県岡崎市稲熊町赤松6-13,0564-24-6358,https://inuzuka-stone.com,,https://inuzuka-stone.com/company,0.5,1,1,1
+太田油脂株式会社,岡崎市,〒444-0825 愛知県岡崎市福岡町字下荒追28,0564-51-9521,https://ota-oil.co.jp/,https://ota-oil.co.jp/contact/,https://ota-oil.co.jp/contact/,0.5,1,1,1
+ブラザー印刷株式会社,岡崎市,〒444-0834 愛知県岡崎市柱町字福部池1-200,0564-51-0651,https://brother-p.com/,https://site.brother-p.com/inquiry/,https://site.brother-p.com/inquiry/,0.5,1,1,1
+株式会社岡崎グリーン,岡崎市,〒444-0908 愛知県岡崎市橋目町字竹之内60番地1,0564-31-1131,https://okazaki-green.co.jp/,https://okazaki-green.co.jp/contact/,https://okazaki-green.co.jp/company/access.html,0.5,1,1,1
 株式会社中日図書,岡崎市,,,https://chunichi-book.amebaownd.com,,https://www.okazakiminamirc.com/voice,,,,
-清水電機株式会社,岡崎市,〒444-0011 愛知県岡崎市欠町字石ヶ崎下夕通3-3,0564-24-1116,https://www.shimizu-denki.jp/,https://www.shimizu-denki.jp/contact,https://www.shimizu-denki.jp/company,,,,
+清水電機株式会社,岡崎市,〒444-0011 愛知県岡崎市欠町字石ヶ崎下夕通3-3,0564-24-1116,https://www.shimizu-denki.jp/,https://www.shimizu-denki.jp/contact,https://www.shimizu-denki.jp/company,0.5,1,1,1
