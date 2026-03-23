@@ -65,3 +65,10 @@
 ## 次に埋めると効果が高い項目
 - `contact_form_url`
 - `industry_fit`
+
+## 2026-03-23 ルール適用の展開
+- 高山市の8社について、`industry_fit=0.5` を反映
+- 根拠は、公開ソースと公式サイトから事業内容が読み取りやすいこと
+- `contact_form_url` は、公式サイト上で安全に確認できる問い合わせフォームを確認できなかったため空欄のまま
+- 再計算後は、全8社が `priority_score=62` `priority_rank=A`
+- `score_reason` は `Industry fit / Local focus / Community network signal / Reachable contact path`
