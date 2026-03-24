@@ -16,6 +16,7 @@
 - [成田市 着手メモ](/C:/Users/fln_user/Documents/作業用フォルダー/docs/narita-real-data-start.md)
 - [長浜市 着手メモ](/C:/Users/fln_user/Documents/作業用フォルダー/docs/nagahama-real-data-start.md)
 - [シグナルルール](/C:/Users/fln_user/Documents/作業用フォルダー/docs/signal-rules.md)
+- [重複・同名企業衝突 確認メモ](/C:/Users/fln_user/Documents/作業用フォルダー/docs/duplicate-name-collision-check.md)
 
 ## 結果一覧
 | 地域 | 対象企業数 | usable | usable未達 | 最新スコア状況 | 補足 |
