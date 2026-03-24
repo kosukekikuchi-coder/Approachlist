@@ -37,5 +37,5 @@ powershell -ExecutionPolicy Bypass -File .\scripts\approachlist.ps1 build-real-s
 - `company_master.csv` now includes the raw signal columns `industry_fit`, `local_focus`, `network_affinity`, and `contactability` so score changes can be inspected directly.
 - `build-real-sales-list` scans `data/real/*_member_companies.csv` and matching `*_company_details.csv`, then writes:
   - `real_sales_list.csv`: all rows
-  - `real_sales_list_usable.csv`: only `is_usable=true`
+  - `real_sales_list_usable.csv`: only `is_usable=true`, reordered for sales use
   - `real_sales_list_report.csv`: municipality-level counts

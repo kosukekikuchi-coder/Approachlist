@@ -732,7 +732,28 @@ function Invoke-BuildRealSalesList {
     $allRows = @(Invoke-BuildCompanyMaster -MemberRows $allMembers -DetailRows $allDetails -ScoringConfig $scoring -LogFile $LogFile |
         Sort-Object -Property @{ Expression = { [int]$_.priority_score }; Descending = $true }, municipality, company_name)
 
-    $usableRows = @($allRows | Where-Object { $_.is_usable -eq "true" })
+    $usableRows = @($allRows | Where-Object { $_.is_usable -eq "true" } | ForEach-Object {
+            [pscustomobject]@{
+                priority_rank     = $_.priority_rank
+                priority_score    = $_.priority_score
+                company_name      = $_.company_name
+                municipality      = $_.municipality
+                phone             = $_.phone
+                website           = $_.website
+                contact_form_url  = $_.contact_form_url
+                address           = $_.address
+                source_org        = $_.source_org
+                score_reason      = $_.score_reason
+                score_confidence  = $_.score_confidence
+                detail_source_url = $_.detail_source_url
+                source_count      = $_.source_count
+                source_summary    = $_.source_summary
+                industry_fit      = $_.industry_fit
+                local_focus       = $_.local_focus
+                network_affinity  = $_.network_affinity
+                contactability    = $_.contactability
+            }
+        })
     $reportRows = @(
         foreach ($group in ($allRows | Group-Object municipality | Sort-Object Name)) {
             $rows = @($group.Group)
