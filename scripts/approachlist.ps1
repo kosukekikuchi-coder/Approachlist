@@ -54,13 +54,24 @@ function Write-LogEntry {
 function Write-CsvBom {
     param(
         [Parameter(Mandatory = $true)]
-        [System.Collections.IEnumerable]$Rows,
+        [object]$Rows,
         [Parameter(Mandatory = $true)]
         [string]$Path
     )
 
     Ensure-ParentDirectory -Path $Path
-    $csv = @($Rows | ConvertTo-Csv -NoTypeInformation)
+
+    $rowArray = @()
+    if ($Rows -is [System.Collections.IEnumerable] -and -not ($Rows -is [string])) {
+        foreach ($row in $Rows) {
+            $rowArray += $row
+        }
+    }
+    else {
+        $rowArray = @($Rows)
+    }
+
+    $csv = @($rowArray | ConvertTo-Csv -NoTypeInformation)
     $encoding = New-Object System.Text.UTF8Encoding($true)
     [System.IO.File]::WriteAllLines($Path, $csv, $encoding)
 }
@@ -142,6 +153,226 @@ function Join-ReasonParts {
     return ($filtered -join " / ")
 }
 
+function Normalize-CompanyName {
+    param([string]$Name)
+
+    if ([string]::IsNullOrWhiteSpace($Name)) {
+        return ""
+    }
+
+    $normalized = $Name.Trim()
+    $normalized = $normalized -replace '(\u682A\u5F0F\u4F1A\u793E|\u6709\u9650\u4F1A\u793E|\u5408\u540C\u4F1A\u793E|\u5408\u8CC7\u4F1A\u793E|\u5408\u540D\u4F1A\u793E|\uFF08\u682A\uFF09|\u3231)', ''
+    $normalized = $normalized -replace '[\s\u3000\(\)\uFF08\uFF09]', ''
+    return $normalized
+}
+
+function Test-DuplicateCandidate {
+    param(
+        [pscustomobject]$Left,
+        [pscustomobject]$Right
+    )
+
+    if ($null -eq $Left -or $null -eq $Right) {
+        return $false
+    }
+
+    if ([string]::IsNullOrWhiteSpace($Left.municipality) -or [string]::IsNullOrWhiteSpace($Right.municipality)) {
+        return $false
+    }
+
+    if ($Left.municipality.Trim() -ne $Right.municipality.Trim()) {
+        return $false
+    }
+
+    $leftName = Normalize-CompanyName -Name $Left.company_name
+    $rightName = Normalize-CompanyName -Name $Right.company_name
+    if ([string]::IsNullOrWhiteSpace($leftName) -or $leftName -ne $rightName) {
+        return $false
+    }
+
+    $phoneMatch = -not [string]::IsNullOrWhiteSpace($Left.phone) -and -not [string]::IsNullOrWhiteSpace($Right.phone) -and $Left.phone.Trim() -eq $Right.phone.Trim()
+    $addressMatch = -not [string]::IsNullOrWhiteSpace($Left.address) -and -not [string]::IsNullOrWhiteSpace($Right.address) -and $Left.address.Trim() -eq $Right.address.Trim()
+
+    return ($phoneMatch -or $addressMatch)
+}
+
+function Get-CandidateStrength {
+    param([pscustomobject]$Row)
+
+    $score = 0
+    foreach ($field in @("address", "phone", "website", "contact_form_url", "detail_source_url")) {
+        if (-not [string]::IsNullOrWhiteSpace([string]$Row.$field)) {
+            $score += 1
+        }
+    }
+
+    if ([double]$Row.industry_fit -gt 0) { $score += 1 }
+    if ([double]$Row.local_focus -gt 0) { $score += 1 }
+    if ([double]$Row.network_affinity -gt 0) { $score += 1 }
+    if ([double]$Row.contactability -gt 0) { $score += 1 }
+    if ([string]$Row.match_status -eq "exact") { $score += 2 }
+
+    return $score
+}
+
+function Get-PreferredCandidate {
+    param(
+        [pscustomobject]$Left,
+        [pscustomobject]$Right
+    )
+
+    if ($null -eq $Left) { return $Right }
+    if ($null -eq $Right) { return $Left }
+
+    $leftStrength = Get-CandidateStrength -Row $Left
+    $rightStrength = Get-CandidateStrength -Row $Right
+
+    if ($rightStrength -gt $leftStrength) {
+        return $Right
+    }
+
+    return $Left
+}
+
+function Merge-UniqueSummary {
+    param(
+        [string]$Existing,
+        [string]$Additional
+    )
+
+    $values = New-Object System.Collections.Generic.List[string]
+    foreach ($raw in @($Existing, $Additional)) {
+        if ([string]::IsNullOrWhiteSpace($raw)) {
+            continue
+        }
+
+        foreach ($part in ($raw -split "\s\|\s")) {
+            $trimmed = $part.Trim()
+            if (-not [string]::IsNullOrWhiteSpace($trimmed) -and -not $values.Contains($trimmed)) {
+                $values.Add($trimmed)
+            }
+        }
+    }
+
+    return ($values -join " | ")
+}
+
+function Merge-CandidatePair {
+    param(
+        [pscustomobject]$Primary,
+        [pscustomobject]$Secondary
+    )
+
+    $representative = Get-PreferredCandidate -Left $Primary -Right $Secondary
+    $other = $Primary
+    if ($representative -eq $Primary) {
+        $other = $Secondary
+    }
+    else {
+        $other = $Primary
+    }
+
+    $mergedIndustryFit = [math]::Max([double]$Primary.industry_fit, [double]$Secondary.industry_fit)
+    $mergedLocalFocus = [math]::Max([double]$Primary.local_focus, [double]$Secondary.local_focus)
+    $mergedNetworkAffinity = [math]::Max([double]$Primary.network_affinity, [double]$Secondary.network_affinity)
+    $mergedContactability = [math]::Max([double]$Primary.contactability, [double]$Secondary.contactability)
+
+    [pscustomobject]@{
+        company_name      = $representative.company_name
+        municipality      = $representative.municipality
+        address           = $(if (-not [string]::IsNullOrWhiteSpace($representative.address)) { $representative.address } else { $other.address })
+        phone             = $(if (-not [string]::IsNullOrWhiteSpace($representative.phone)) { $representative.phone } else { $other.phone })
+        website           = $(if (-not [string]::IsNullOrWhiteSpace($representative.website)) { $representative.website } else { $other.website })
+        contact_form_url  = $(if (-not [string]::IsNullOrWhiteSpace($representative.contact_form_url)) { $representative.contact_form_url } else { $other.contact_form_url })
+        source_org        = $representative.source_org
+        source_url        = $representative.source_url
+        detail_source_url = $(if (-not [string]::IsNullOrWhiteSpace($representative.detail_source_url)) { $representative.detail_source_url } else { $other.detail_source_url })
+        industry_fit      = $mergedIndustryFit
+        local_focus       = $mergedLocalFocus
+        network_affinity  = $mergedNetworkAffinity
+        contactability    = $mergedContactability
+        match_status      = $(if ($Primary.match_status -eq "exact" -or $Secondary.match_status -eq "exact") { "exact" } elseif ($Primary.match_status -eq "ambiguous" -or $Secondary.match_status -eq "ambiguous") { "ambiguous" } else { "missing" })
+        source_count      = ([int]$Primary.source_count + [int]$Secondary.source_count)
+        source_summary    = $(Merge-UniqueSummary -Existing $Primary.source_summary -Additional $Secondary.source_summary)
+    }
+}
+
+function Merge-CandidateRows {
+    param([System.Collections.IEnumerable]$Rows)
+
+    $mergedRows = New-Object System.Collections.Generic.List[object]
+
+    foreach ($row in $Rows) {
+        $matchedIndex = -1
+        for ($i = 0; $i -lt $mergedRows.Count; $i++) {
+            if (Test-DuplicateCandidate -Left $mergedRows[$i] -Right $row) {
+                $matchedIndex = $i
+                break
+            }
+        }
+
+        if ($matchedIndex -ge 0) {
+            $mergedRows[$matchedIndex] = Merge-CandidatePair -Primary $mergedRows[$matchedIndex] -Secondary $row
+        }
+        else {
+            $mergedRows.Add($row)
+        }
+    }
+
+    return $mergedRows
+}
+
+function Merge-DetailRows {
+    param([System.Collections.IEnumerable]$Rows)
+
+    $rowList = @($Rows)
+    if ($rowList.Count -eq 0) {
+        return $null
+    }
+
+    $getDetailStrength = {
+        param([pscustomobject]$Row)
+        $score = 0
+        foreach ($field in @("address", "phone", "website", "contact_form_url", "detail_source_url")) {
+            if (-not [string]::IsNullOrWhiteSpace([string]$Row.$field)) {
+                $score += 1
+            }
+        }
+        return $score
+    }
+
+    $merged = $rowList[0]
+    for ($i = 1; $i -lt $rowList.Count; $i++) {
+        $current = $rowList[$i]
+        if (-not (Test-DuplicateCandidate -Left $merged -Right $current)) {
+            return $null
+        }
+
+        $preferred = $merged
+        $other = $current
+        if ((& $getDetailStrength $current) -gt (& $getDetailStrength $merged)) {
+            $preferred = $current
+            $other = $merged
+        }
+
+        $merged = [pscustomobject]@{
+            company_name      = $preferred.company_name
+            municipality      = $preferred.municipality
+            address           = $(if (-not [string]::IsNullOrWhiteSpace($preferred.address)) { $preferred.address } else { $other.address })
+            phone             = $(if (-not [string]::IsNullOrWhiteSpace($preferred.phone)) { $preferred.phone } else { $other.phone })
+            website           = $(if (-not [string]::IsNullOrWhiteSpace($preferred.website)) { $preferred.website } else { $other.website })
+            contact_form_url  = $(if (-not [string]::IsNullOrWhiteSpace($preferred.contact_form_url)) { $preferred.contact_form_url } else { $other.contact_form_url })
+            detail_source_url = $(if (-not [string]::IsNullOrWhiteSpace($preferred.detail_source_url)) { $preferred.detail_source_url } else { $other.detail_source_url })
+            industry_fit      = [math]::Max([double]$merged.industry_fit, [double]$current.industry_fit)
+            local_focus       = [math]::Max([double]$merged.local_focus, [double]$current.local_focus)
+            network_affinity  = [math]::Max([double]$merged.network_affinity, [double]$current.network_affinity)
+            contactability    = [math]::Max([double]$merged.contactability, [double]$current.contactability)
+        }
+    }
+
+    return $merged
+}
+
 function Invoke-ResolveAreas {
     param(
         [string]$AreasFile,
@@ -159,7 +390,7 @@ function Invoke-ResolveAreas {
         $contractedSet[$row.municipality] = $true
     }
 
-    $results = foreach ($area in $areas) {
+    $results = @(foreach ($area in $areas) {
         $population = [int]$area.population
         $selected = $true
         $reason = ""
@@ -179,7 +410,7 @@ function Invoke-ResolveAreas {
             selected        = $selected.ToString().ToLowerInvariant()
             excluded_reason = $reason
         }
-    }
+    })
 
     Write-CsvBom -Rows $results -Path $OutputFile
     $selectedCount = @($results | Where-Object { $_.selected -eq "true" }).Count
@@ -318,7 +549,7 @@ function Invoke-BuildCompanyMaster {
     $members = Import-Csv -Path $MembersFile | Where-Object { $selectedMap.ContainsKey($_.municipality) }
     $details = Import-Csv -Path $DetailsFile
     $scoring = Read-SimpleYaml -Path $ScoringFile
-    $outputRows = New-Object System.Collections.Generic.List[object]
+    $candidateRows = New-Object System.Collections.Generic.List[object]
 
     foreach ($member in $members) {
         $exactMatches = @($details | Where-Object {
@@ -332,6 +563,17 @@ function Invoke-BuildCompanyMaster {
         if ($exactMatches.Count -eq 1) {
             $detail = $exactMatches[0]
             $matchStatus = "exact"
+        }
+        elseif ($exactMatches.Count -gt 1) {
+            $mergedDetail = Merge-DetailRows -Rows $exactMatches
+            if ($null -ne $mergedDetail) {
+                $detail = $mergedDetail
+                $matchStatus = "exact"
+            }
+            else {
+                $matchStatus = "ambiguous"
+                Write-LogEntry -Level "warning" -Message "Conflicting duplicate detail rows: $($member.company_name) in $($member.municipality)" -Path $LogFile
+            }
         }
         elseif ($sameNameMatches.Count -gt 1) {
             $matchStatus = "ambiguous"
@@ -358,10 +600,12 @@ function Invoke-BuildCompanyMaster {
             $detailSource = [string]$detail.detail_source_url
         }
 
-        $usable = Get-UsableStatus -CompanyName $member.company_name -Address $address -Phone $phone -Website $website -MatchStatus $matchStatus
-        $score = Get-ScoreResult -Detail $detail -MatchStatus $matchStatus -ScoringConfig $scoring
+        $sourceSummary = $member.source_org
+        if (-not [string]::IsNullOrWhiteSpace($member.source_url)) {
+            $sourceSummary = '{0} <{1}>' -f $member.source_org, $member.source_url
+        }
 
-        $outputRows.Add([pscustomobject]@{
+        $candidateRows.Add([pscustomobject]@{
             company_name      = $member.company_name
             municipality      = $member.municipality
             address           = $address
@@ -371,6 +615,35 @@ function Invoke-BuildCompanyMaster {
             source_org        = $member.source_org
             source_url        = $member.source_url
             detail_source_url = $detailSource
+            industry_fit      = $(if ($null -ne $detail) { [double]$detail.industry_fit } else { 0 })
+            local_focus       = $(if ($null -ne $detail) { [double]$detail.local_focus } else { 0 })
+            network_affinity  = $(if ($null -ne $detail) { [double]$detail.network_affinity } else { 0 })
+            contactability    = $(if ($null -ne $detail) { [double]$detail.contactability } else { 0 })
+            match_status      = $matchStatus
+            source_count      = 1
+            source_summary    = $sourceSummary
+        })
+    }
+
+    $mergedCandidates = Merge-CandidateRows -Rows $candidateRows
+    $outputRows = New-Object System.Collections.Generic.List[object]
+
+    foreach ($candidate in $mergedCandidates) {
+        $usable = Get-UsableStatus -CompanyName $candidate.company_name -Address $candidate.address -Phone $candidate.phone -Website $candidate.website -MatchStatus $candidate.match_status
+        $score = Get-ScoreResult -Detail $candidate -MatchStatus $candidate.match_status -ScoringConfig $scoring
+
+        $outputRows.Add([pscustomobject]@{
+            company_name      = $candidate.company_name
+            municipality      = $candidate.municipality
+            address           = $candidate.address
+            phone             = $candidate.phone
+            website           = $candidate.website
+            contact_form_url  = $candidate.contact_form_url
+            source_org        = $candidate.source_org
+            source_url        = $candidate.source_url
+            source_count      = $candidate.source_count
+            source_summary    = $candidate.source_summary
+            detail_source_url = $candidate.detail_source_url
             is_usable         = $usable.IsUsable
             usable_reason     = $usable.Reason
             priority_score    = $score.Score
@@ -394,10 +667,10 @@ function Invoke-ReportStatus {
         [string]$OutputFile
     )
 
-    $areas = Import-Csv -Path $AreasFile
-    $members = Import-Csv -Path $MembersFile
-    $resolved = Import-Csv -Path $ResolvedFile
-    $master = Import-Csv -Path $CompanyMasterFile
+    $areas = @(Import-Csv -Path $AreasFile)
+    $members = @(Import-Csv -Path $MembersFile)
+    $resolved = @(Import-Csv -Path $ResolvedFile)
+    $master = @(Import-Csv -Path $CompanyMasterFile)
 
     $selectedMunicipalities = @($resolved | Where-Object { $_.selected -eq "true" } | ForEach-Object { $_.municipality })
     $selectedMap = @{}
