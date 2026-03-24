@@ -1,6 +1,6 @@
 param(
     [Parameter(Mandatory = $true, Position = 0)]
-    [ValidateSet("resolve-areas", "build-company-master", "report-status")]
+    [ValidateSet("resolve-areas", "build-company-master", "report-status", "build-real-sales-list")]
     [string]$Command,
 
     [int]$MinPopulation = 100000,
@@ -13,7 +13,11 @@ param(
     [string]$ScoringPath = "config/scoring.yaml",
     [string]$CompanyMasterPath = "data/out/company_master.csv",
     [string]$ProgressReportPath = "data/out/progress_report.csv",
-    [string]$LogPath = "logs/run.log"
+    [string]$LogPath = "logs/run.log",
+    [string]$RealDataDirectory = "data/real",
+    [string]$RealSalesListPath = "data/out/real_sales_list.csv",
+    [string]$RealSalesUsablePath = "data/out/real_sales_list_usable.csv",
+    [string]$RealSalesReportPath = "data/out/real_sales_list_report.csv"
 )
 
 Set-StrictMode -Version Latest
@@ -531,31 +535,19 @@ function Get-ScoreResult {
 
 function Invoke-BuildCompanyMaster {
     param(
-        [string]$ResolvedFile,
-        [string]$MembersFile,
-        [string]$DetailsFile,
-        [string]$ScoringFile,
-        [string]$OutputFile,
+        [System.Collections.IEnumerable]$MemberRows,
+        [System.Collections.IEnumerable]$DetailRows,
+        [hashtable]$ScoringConfig,
         [string]$LogFile
     )
 
-    $resolved = Import-Csv -Path $ResolvedFile
-    $selectedAreas = @($resolved | Where-Object { $_.selected -eq "true" } | ForEach-Object { $_.municipality })
-    $selectedMap = @{}
-    foreach ($municipality in $selectedAreas) {
-        $selectedMap[$municipality] = $true
-    }
-
-    $members = Import-Csv -Path $MembersFile | Where-Object { $selectedMap.ContainsKey($_.municipality) }
-    $details = Import-Csv -Path $DetailsFile
-    $scoring = Read-SimpleYaml -Path $ScoringFile
     $candidateRows = New-Object System.Collections.Generic.List[object]
 
-    foreach ($member in $members) {
-        $exactMatches = @($details | Where-Object {
+    foreach ($member in $MemberRows) {
+        $exactMatches = @($DetailRows | Where-Object {
             $_.company_name -eq $member.company_name -and $_.municipality -eq $member.municipality
         })
-        $sameNameMatches = @($details | Where-Object { $_.company_name -eq $member.company_name })
+        $sameNameMatches = @($DetailRows | Where-Object { $_.company_name -eq $member.company_name })
 
         $matchStatus = "missing"
         $detail = $null
@@ -630,7 +622,7 @@ function Invoke-BuildCompanyMaster {
 
     foreach ($candidate in $mergedCandidates) {
         $usable = Get-UsableStatus -CompanyName $candidate.company_name -Address $candidate.address -Phone $candidate.phone -Website $candidate.website -MatchStatus $candidate.match_status
-        $score = Get-ScoreResult -Detail $candidate -MatchStatus $candidate.match_status -ScoringConfig $scoring
+        $score = Get-ScoreResult -Detail $candidate -MatchStatus $candidate.match_status -ScoringConfig $ScoringConfig
 
         $outputRows.Add([pscustomobject]@{
             company_name      = $candidate.company_name
@@ -657,8 +649,108 @@ function Invoke-BuildCompanyMaster {
         })
     }
 
+    return $outputRows
+}
+
+function Invoke-BuildCompanyMasterCommand {
+    param(
+        [string]$ResolvedFile,
+        [string]$MembersFile,
+        [string]$DetailsFile,
+        [string]$ScoringFile,
+        [string]$OutputFile,
+        [string]$LogFile
+    )
+
+    $resolved = Import-Csv -Path $ResolvedFile
+    $selectedAreas = @($resolved | Where-Object { $_.selected -eq "true" } | ForEach-Object { $_.municipality })
+    $selectedMap = @{}
+    foreach ($municipality in $selectedAreas) {
+        $selectedMap[$municipality] = $true
+    }
+
+    $members = Import-Csv -Path $MembersFile | Where-Object { $selectedMap.ContainsKey($_.municipality) }
+    $details = Import-Csv -Path $DetailsFile
+    $scoring = Read-SimpleYaml -Path $ScoringFile
+
+    $outputRows = Invoke-BuildCompanyMaster -MemberRows $members -DetailRows $details -ScoringConfig $scoring -LogFile $LogFile
     Write-CsvBom -Rows $outputRows -Path $OutputFile
     Write-LogEntry -Level "info" -Message "build-company-master completed: output=$($outputRows.Count)" -Path $LogFile
+}
+
+function Get-RealDataPairs {
+    param([string]$Directory)
+
+    $memberFiles = Get-ChildItem -Path $Directory -Filter "*_member_companies.csv" -File
+    $pairs = New-Object System.Collections.Generic.List[object]
+
+    foreach ($memberFile in $memberFiles) {
+        $prefix = $memberFile.BaseName -replace '_member_companies$', ''
+        $detailPath = Join-Path $Directory ("{0}_company_details.csv" -f $prefix)
+        if (-not (Test-Path $detailPath)) {
+            continue
+        }
+
+        $pairs.Add([pscustomobject]@{
+            Prefix      = $prefix
+            MemberPath  = $memberFile.FullName
+            DetailPath  = $detailPath
+        })
+    }
+
+    return $pairs
+}
+
+function Invoke-BuildRealSalesList {
+    param(
+        [string]$RealDirectory,
+        [string]$ScoringFile,
+        [string]$AllOutputFile,
+        [string]$UsableOutputFile,
+        [string]$ReportOutputFile,
+        [string]$LogFile
+    )
+
+    $pairs = @(Get-RealDataPairs -Directory $RealDirectory)
+    if ($pairs.Count -eq 0) {
+        throw "No real-data file pairs were found under: $RealDirectory"
+    }
+
+    $allMembers = New-Object System.Collections.Generic.List[object]
+    $allDetails = New-Object System.Collections.Generic.List[object]
+
+    foreach ($pair in $pairs) {
+        foreach ($memberRow in @(Import-Csv -Path $pair.MemberPath)) {
+            $allMembers.Add($memberRow)
+        }
+        foreach ($detailRow in @(Import-Csv -Path $pair.DetailPath)) {
+            $allDetails.Add($detailRow)
+        }
+    }
+
+    $scoring = Read-SimpleYaml -Path $ScoringFile
+    $allRows = @(Invoke-BuildCompanyMaster -MemberRows $allMembers -DetailRows $allDetails -ScoringConfig $scoring -LogFile $LogFile |
+        Sort-Object -Property @{ Expression = { [int]$_.priority_score }; Descending = $true }, municipality, company_name)
+
+    $usableRows = @($allRows | Where-Object { $_.is_usable -eq "true" })
+    $reportRows = @(
+        foreach ($group in ($allRows | Group-Object municipality | Sort-Object Name)) {
+            $rows = @($group.Group)
+            [pscustomobject]@{
+                municipality  = $group.Name
+                total_count   = $rows.Count
+                usable_count  = @($rows | Where-Object { $_.is_usable -eq "true" }).Count
+                top_rank_count = @($rows | Where-Object { $_.priority_rank -eq "A" }).Count
+                contact_form_count = @($rows | Where-Object { -not [string]::IsNullOrWhiteSpace($_.contact_form_url) }).Count
+            }
+        }
+    )
+
+    Write-CsvBom -Rows $allRows -Path $AllOutputFile
+    Write-CsvBom -Rows $usableRows -Path $UsableOutputFile
+    Write-CsvBom -Rows $reportRows -Path $ReportOutputFile
+
+    Write-LogEntry -Level "info" -Message "build-real-sales-list completed: total=$($allRows.Count) usable=$($usableRows.Count) municipalities=$($reportRows.Count)" -Path $LogFile
 }
 
 function Invoke-ReportStatus {
@@ -717,15 +809,22 @@ $scoringFile = Resolve-RepoPath -Path $ScoringPath
 $companyMasterFile = Resolve-RepoPath -Path $CompanyMasterPath
 $progressFile = Resolve-RepoPath -Path $ProgressReportPath
 $logFile = Resolve-RepoPath -Path $LogPath
+$realDirectory = Resolve-RepoPath -Path $RealDataDirectory
+$realSalesListFile = Resolve-RepoPath -Path $RealSalesListPath
+$realSalesUsableFile = Resolve-RepoPath -Path $RealSalesUsablePath
+$realSalesReportFile = Resolve-RepoPath -Path $RealSalesReportPath
 
 switch ($Command) {
     "resolve-areas" {
         Invoke-ResolveAreas -AreasFile $areasFile -ContractedFile $contractedFile -OutputFile $resolvedFile -MinimumPopulation $MinPopulation -MaximumPopulation $MaxPopulation -LogFile $logFile
     }
     "build-company-master" {
-        Invoke-BuildCompanyMaster -ResolvedFile $resolvedFile -MembersFile $membersFile -DetailsFile $detailsFile -ScoringFile $scoringFile -OutputFile $companyMasterFile -LogFile $logFile
+        Invoke-BuildCompanyMasterCommand -ResolvedFile $resolvedFile -MembersFile $membersFile -DetailsFile $detailsFile -ScoringFile $scoringFile -OutputFile $companyMasterFile -LogFile $logFile
     }
     "report-status" {
         Invoke-ReportStatus -AreasFile $areasFile -MembersFile $membersFile -ResolvedFile $resolvedFile -CompanyMasterFile $companyMasterFile -LogFile $logFile -OutputFile $progressFile
+    }
+    "build-real-sales-list" {
+        Invoke-BuildRealSalesList -RealDirectory $realDirectory -ScoringFile $scoringFile -AllOutputFile $realSalesListFile -UsableOutputFile $realSalesUsableFile -ReportOutputFile $realSalesReportFile -LogFile $logFile
     }
 }

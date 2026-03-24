@@ -10,6 +10,7 @@ Run commands from PowerShell:
 powershell -ExecutionPolicy Bypass -File .\scripts\approachlist.ps1 resolve-areas
 powershell -ExecutionPolicy Bypass -File .\scripts\approachlist.ps1 build-company-master
 powershell -ExecutionPolicy Bypass -File .\scripts\approachlist.ps1 report-status
+powershell -ExecutionPolicy Bypass -File .\scripts\approachlist.ps1 build-real-sales-list
 ```
 
 ## Files
@@ -22,6 +23,9 @@ powershell -ExecutionPolicy Bypass -File .\scripts\approachlist.ps1 report-statu
 - `data/out/resolved_areas.csv`
 - `data/out/company_master.csv`
 - `data/out/progress_report.csv`
+- `data/out/real_sales_list.csv`
+- `data/out/real_sales_list_usable.csv`
+- `data/out/real_sales_list_report.csv`
 - `logs/run.log`
 
 ## Notes
@@ -31,3 +35,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\approachlist.ps1 report-statu
 - `company_master.csv` now includes `contact_form_url` for fixture cases where the official site exposes a contact path.
 - `company_master.csv` now also includes `source_count` and `source_summary` so duplicate-integrated rows can still trace their contributing sources.
 - `company_master.csv` now includes the raw signal columns `industry_fit`, `local_focus`, `network_affinity`, and `contactability` so score changes can be inspected directly.
+- `build-real-sales-list` scans `data/real/*_member_companies.csv` and matching `*_company_details.csv`, then writes:
+  - `real_sales_list.csv`: all rows
+  - `real_sales_list_usable.csv`: only `is_usable=true`
+  - `real_sales_list_report.csv`: municipality-level counts
