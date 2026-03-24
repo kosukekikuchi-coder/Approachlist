@@ -74,3 +74,6 @@
 1. この観点をベースに、重複統合の受け入れテストケースを小さく1〜3件作る
 2. そのテストを通す最小実装方針を決める
 3. 秋田市のケースで先に試す
+
+関連:
+- [重複統合 受け入れテストケース](/C:/Users/fln_user/Documents/作業用フォルダー/docs/duplicate-integration-test-cases.md)
