@@ -54,4 +54,4 @@
 ## 補足
 - `industry_fit=1` は「本命候補」なので、今後も少数ずつ慎重に確認する
 - `akita_company_details.csv` では `industry_fit=1` を反映済み
-- ただし、現時点の `akita_company_master.csv` ではスコア反映の再確認が必要
+- `akita_company_master.csv` でも `80 / A` と `Industry fit / Local focus / Community network signal / Reachable contact path` への変化を確認できた

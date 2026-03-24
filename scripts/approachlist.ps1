@@ -644,6 +644,10 @@ function Invoke-BuildCompanyMaster {
             source_count      = $candidate.source_count
             source_summary    = $candidate.source_summary
             detail_source_url = $candidate.detail_source_url
+            industry_fit      = $candidate.industry_fit
+            local_focus       = $candidate.local_focus
+            network_affinity  = $candidate.network_affinity
+            contactability    = $candidate.contactability
             is_usable         = $usable.IsUsable
             usable_reason     = $usable.Reason
             priority_score    = $score.Score
