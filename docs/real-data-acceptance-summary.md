@@ -15,6 +15,7 @@
 - [高山市 実データ受け入れ結果](/C:/Users/fln_user/Documents/作業用フォルダー/docs/takayama-real-data-acceptance-result.md)
 - [成田市 着手メモ](/C:/Users/fln_user/Documents/作業用フォルダー/docs/narita-real-data-start.md)
 - [長浜市 着手メモ](/C:/Users/fln_user/Documents/作業用フォルダー/docs/nagahama-real-data-start.md)
+- [秋田市 重複統合結果](/C:/Users/fln_user/Documents/作業用フォルダー/docs/akita-real-data-duplicate-integration-result.md)
 - [シグナルルール](/C:/Users/fln_user/Documents/作業用フォルダー/docs/signal-rules.md)
 - [重複・同名企業衝突 確認メモ](/C:/Users/fln_user/Documents/作業用フォルダー/docs/duplicate-name-collision-check.md)
 
@@ -40,6 +41,7 @@
 - usable 未達でも除外せず、`detail_source_url` を持ったまま確認可能な形で出力できた
 - 津山市、高山市、長浜市では、`industry_fit` を入れると `score_reason` が自然に変化することを確認できた
 - 岡崎市でも、保留1社を除く7社で `industry_fit` 反映後のスコア変化を確認できた
+- 秋田市では、実データフローで重複統合を確認し、11件入力を9件出力に安全に束ねられた
 
 ## 実務上の評価
 ### 1. 誤情報回避を優先した運用ができている
@@ -59,6 +61,11 @@
 
 の反映で、`priority_score` と `score_reason` が意図どおり変化することを複数地域で確認できた
 
+### 4. 重複統合は実データでも最初の一歩を確認できた
+- 秋田市で、同一企業の複数ソース掲載を1件に統合できた
+- `source_count` と `source_summary` で、統合後も出所を追える
+- 近似社名だけでは統合せず、誤統合防止も確認できた
+
 ## ルール適用後の見え方
 - `contact_form_url`
   - 公式サイト起点で安全に確認できるものだけ入力し、見つからない場合は空欄にする運用で問題なく進められた
@@ -71,7 +78,8 @@
 - 成田市の `株式会社ＴＥＩ` と `株式会社サンリツ` は未達のまま
 - `contact_form_url` は地域によって取得できる件数に差がある
 - `industry_fit=1` を付ける企業の実地確認はまだ本格着手していない
-- 重複統合、同名企業衝突、別タイプのソース耐性は次フェーズでの確認が必要
+- 重複統合は秋田市で初回確認済みだが、地域横断や住所表記ゆれへの耐性はまだ未確認
+- 同名企業衝突、別タイプのソース耐性は引き続き次フェーズでの確認が必要
 
 ## 現時点の判断
 現時点では、**「実データで地域をまたいで一定割合の usable 判定ができ、誤情報を避けつつ、根拠つきでスコアと説明を出せる」** ところまでは確認できた。
@@ -82,9 +90,10 @@
 - 根拠ソースを追える
 - `industry_fit` ルールでスコアが説明可能に変わる
 - 情報が弱い企業は無理に埋めない
+- 保守的な重複統合ルールが、fixture と実データの両方で機能する
 
 ## 次にやるべきこと
 1. `contact_form_url` のルール適用を、広い件数で安定させる
 2. `industry_fit=1` 候補を少数だけ実地確認する
 3. 5地域より少し広い件数で実データ確認を増やす
-4. 重複統合、同名企業誤紐づけ、別ソース耐性の確認に進む
+4. 重複統合を地域横断ケースに広げ、同名企業誤紐づけと別ソース耐性を引き続き確認する
