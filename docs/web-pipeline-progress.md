@@ -60,16 +60,16 @@ Input municipalities:
 
 Latest result:
 
-- total rows: `76`
-- usable rows: `35`
+- total rows: `75`
+- usable rows: `51`
 
 Municipality breakdown:
 
-- 岡崎市: `29 / usable 16`
-- 津山市: `6 / usable 4`
-- 高山市: `21 / usable 6`
-- 成田市: `16 / usable 7`
-- 長浜市: `4 / usable 2`
+- 岡崎市: `27 / usable 19`
+- 津山市: `5 / usable 5`
+- 高山市: `21 / usable 11`
+- 成田市: `16 / usable 11`
+- 長浜市: `6 / usable 5`
 
 Key files:
 
@@ -88,13 +88,13 @@ Key files:
 ## Current gaps
 
 - Company-name normalization still leaves generic titles in some rows.
-- Address extraction is still the main driver of unusable rows.
+- Generic company-name normalization is still the main driver of noisy rows.
 - Some sources produce noisy external links that need stronger source-type-specific filtering.
 - Score signals are still mostly defaulted in the live-crawl path.
 
 ## Next focus
 
 1. Improve company-name normalization for generic page titles.
-2. Strengthen address extraction for official-site pages without simple postal-mark patterns.
-3. Add source-type-specific noise filters so chamber pages yield fewer non-company candidates.
-4. Raise usable coverage on Narita and Nagahama before expanding to more municipalities.
+2. Tighten source-type-specific noise filters so chamber pages yield fewer non-company candidates.
+3. Refine extracted addresses so site-navigation text is less likely to remain in the field.
+4. Add score-signal enrichment to the live-crawl path after name quality stabilizes.

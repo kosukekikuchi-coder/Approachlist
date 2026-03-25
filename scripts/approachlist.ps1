@@ -991,7 +991,7 @@ function Test-IgnoredCandidateUrl {
             "www.endpolio.org",
             "endpolio.org"
         )) {
-        if ($candidateHost -eq $ignoredHost) {
+        if ($candidateHost -eq $ignoredHost -or $candidateHost.EndsWith(".$ignoredHost")) {
             return $true
         }
     }
@@ -1243,11 +1243,47 @@ function Find-ContactFormUrl {
     return ""
 }
 
+function Find-CorporateEntityInText {
+    param([string]$Text)
+
+    if ([string]::IsNullOrWhiteSpace($Text)) {
+        return ""
+    }
+
+    foreach ($pattern in @(
+            '(株式会社[^|｜│\-－/／*＊]+)',
+            '(有限会社[^|｜│\-－/／*＊]+)',
+            '(合資会社[^|｜│\-－/／*＊]+)',
+            '(合名会社[^|｜│\-－/／*＊]+)',
+            '(合同会社[^|｜│\-－/／*＊]+)',
+            '([^|｜│\-－/／*＊]+株式会社)',
+            '([^|｜│\-－/／*＊]+有限会社)',
+            '([^|｜│\-－/／*＊]+合同会社)',
+            '(司法書士法人[^|｜│\-－/／*＊]+)',
+            '(医療法人[^|｜│\-－/／*＊]+)',
+            '(学校法人[^|｜│\-－/／*＊]+)'
+        )) {
+        $match = [regex]::Match($Text, $pattern)
+        if ($match.Success) {
+            return ($match.Groups[1].Value -replace '\s+', ' ').Trim()
+        }
+    }
+
+    return ""
+}
+
 function Convert-TitleToCompanyName {
     param(
         [string]$Title,
         [string]$Url
     )
+
+    foreach ($segment in @($Title -split '[|｜]')) {
+        $corporateName = Find-CorporateEntityInText -Text $segment
+        if (-not [string]::IsNullOrWhiteSpace($corporateName)) {
+            return $corporateName
+        }
+    }
 
     $candidate = $Title
     foreach ($separator in @('|', '｜', ' - ', ' – ', ' — ')) {
@@ -1342,23 +1378,9 @@ function Get-NormalizedMemberCompanyName {
     )
 
     $value = [string]$CompanyName
-    $patterns = @(
-        '(株式会社[^|｜│\-－/／*＊]+)',
-        '(有限会社[^|｜│\-－/／*＊]+)',
-        '(合資会社[^|｜│\-－/／*＊]+)',
-        '(合名会社[^|｜│\-－/／*＊]+)',
-        '(合同会社[^|｜│\-－/／*＊]+)',
-        '(司法書士法人[^|｜│\-－/／*＊]+)',
-        '(医療法人[^|｜│\-－/／*＊]+)',
-        '(学校法人[^|｜│\-－/／*＊]+)'
-    )
-
-    foreach ($pattern in $patterns) {
-        $match = [regex]::Match($value, $pattern)
-        if ($match.Success) {
-            $value = $match.Groups[1].Value
-            break
-        }
+    $corporateName = Find-CorporateEntityInText -Text $value
+    if (-not [string]::IsNullOrWhiteSpace($corporateName)) {
+        $value = $corporateName
     }
 
     $value = ($value -replace '【[^】]+】', '').Trim()
@@ -1379,11 +1401,22 @@ function Get-NormalizedMemberCompanyName {
     $value = ($value -replace '^新車・軽自動車リース専門店（株）江山自動車$', '株式会社江山自動車').Trim()
     $value = ($value -replace '^注文住宅 アーツ・ラボ$', 'アーツ・ラボ').Trim()
 
+    $titleCorporateName = Find-CorporateEntityInText -Text ([string]$TitleSnapshot)
+    if ([string]::IsNullOrWhiteSpace($value) -and -not [string]::IsNullOrWhiteSpace($titleCorporateName)) {
+        $value = $titleCorporateName
+    }
+    elseif ($value -match '公式ホームページ|ホームページ' -and -not [string]::IsNullOrWhiteSpace($titleCorporateName)) {
+        $value = $titleCorporateName
+    }
+    elseif (-not [string]::IsNullOrWhiteSpace($TitleSnapshot) -and [string]::IsNullOrWhiteSpace($corporateName) -and -not [string]::IsNullOrWhiteSpace($titleCorporateName)) {
+        $value = $titleCorporateName
+    }
+
     if ([string]::IsNullOrWhiteSpace($value) -and -not [string]::IsNullOrWhiteSpace($TitleSnapshot)) {
-        foreach ($pattern in $patterns) {
-            $match = [regex]::Match([string]$TitleSnapshot, $pattern)
-            if ($match.Success) {
-                $value = $match.Groups[1].Value
+        foreach ($segment in @([string]$TitleSnapshot -split '[|｜]')) {
+            $candidateSegment = ($segment -replace '\s+', ' ').Trim()
+            if ($candidateSegment.Length -ge 2 -and $candidateSegment.Length -le 24 -and $candidateSegment -notmatch '公式|トップページ|ホームページ|お問い合わせ|会社概要|事業案内|サービス|採用|RECRUIT|CONTACT') {
+                $value = $candidateSegment
                 break
             }
         }
