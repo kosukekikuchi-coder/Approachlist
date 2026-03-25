@@ -940,9 +940,38 @@ function Get-WebPageTitle {
 
     try {
         $response = Invoke-WebRequest -Uri $Url -UseBasicParsing -TimeoutSec 20
-        $titleMatch = [regex]::Match($response.Content, '<title[^>]*>(.*?)</title>', [System.Text.RegularExpressions.RegexOptions]::IgnoreCase -bor [System.Text.RegularExpressions.RegexOptions]::Singleline)
+        $byteStream = New-Object System.IO.MemoryStream
+        $response.RawContentStream.Position = 0
+        $response.RawContentStream.CopyTo($byteStream)
+        $bytes = $byteStream.ToArray()
+
+        $charset = ""
+        $contentType = [string]$response.Headers["Content-Type"]
+        if ($contentType -match 'charset=([A-Za-z0-9\-_]+)') {
+            $charset = $matches[1]
+        }
+
+        $asciiPreview = [System.Text.Encoding]::ASCII.GetString($bytes)
+        if ([string]::IsNullOrWhiteSpace($charset) -and $asciiPreview -match 'charset=["'']?([A-Za-z0-9\-_]+)') {
+            $charset = $matches[1]
+        }
+
+        if ([string]::IsNullOrWhiteSpace($charset)) {
+            $charset = "utf-8"
+        }
+
+        $encodingName = switch -Regex ($charset.ToLowerInvariant()) {
+            '^(shift_jis|shift-jis|sjis|x-sjis)$' { "shift_jis"; break }
+            '^(euc-jp)$' { "euc-jp"; break }
+            default { $charset }
+        }
+
+        $encoding = [System.Text.Encoding]::GetEncoding($encodingName)
+        $html = $encoding.GetString($bytes)
+        $titleMatch = [regex]::Match($html, '<title[^>]*>(.*?)</title>', [System.Text.RegularExpressions.RegexOptions]::IgnoreCase -bor [System.Text.RegularExpressions.RegexOptions]::Singleline)
         if ($titleMatch.Success) {
-            return ($titleMatch.Groups[1].Value -replace '\s+', ' ').Trim()
+            $title = [System.Net.WebUtility]::HtmlDecode($titleMatch.Groups[1].Value)
+            return ($title -replace '\s+', ' ').Trim()
         }
     }
     catch {
@@ -959,7 +988,7 @@ function Convert-TitleToCompanyName {
     )
 
     $candidate = $Title
-    foreach ($separator in @('|', '-')) {
+    foreach ($separator in @('|', '｜', ' - ', ' – ', ' — ')) {
         if ($candidate.Contains($separator)) {
             $candidate = $candidate.Split($separator)[0]
         }
@@ -967,6 +996,8 @@ function Convert-TitleToCompanyName {
 
     $candidate = ($candidate -replace '\s+', ' ').Trim()
     $candidate = ($candidate -replace '^【公式】', '').Trim()
+    $candidate = ($candidate -replace '【[^】]+】', '').Trim()
+    $candidate = ($candidate -replace '^(愛知県岡崎市の|岡崎市の|愛知県岡崎の|岡崎の)', '').Trim()
     if (-not [string]::IsNullOrWhiteSpace($candidate) -and $candidate.Length -ge 2) {
         return $candidate
     }
