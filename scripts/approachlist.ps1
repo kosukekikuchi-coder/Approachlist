@@ -1,6 +1,6 @@
-param(
+﻿param(
     [Parameter(Mandatory = $true, Position = 0)]
-    [ValidateSet("resolve-areas", "build-company-master", "report-status", "build-real-sales-list", "run-real-pipeline", "build-source-workset")]
+    [ValidateSet("resolve-areas", "build-company-master", "report-status", "build-real-sales-list", "run-real-pipeline", "build-source-workset", "extract-member-candidates")]
     [string]$Command,
 
     [int]$MinPopulation = 100000,
@@ -20,7 +20,8 @@ param(
     [string]$RealSalesUsablePath = "data/out/real_sales_list_usable.csv",
     [string]$RealSalesReportPath = "data/out/real_sales_list_report.csv",
     [string]$SourceRegistryPath = "config/source_registry.csv",
-    [string]$SourceWorksetPath = "data/out/source_workset.csv"
+    [string]$SourceWorksetPath = "data/out/source_workset.csv",
+    [string]$ExtractedMemberCandidatesPath = "data/out/extracted_member_candidates.csv"
 )
 
 Set-StrictMode -Version Latest
@@ -853,6 +854,192 @@ function Invoke-BuildSourceWorkset {
     Write-LogEntry -Level "info" -Message "build-source-workset completed: sources=$($outputRows.Count)" -Path $LogFile
 }
 
+function Resolve-AbsoluteUrl {
+    param(
+        [string]$BaseUrl,
+        [string]$Href
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Href)) {
+        return ""
+    }
+
+    if ($Href.StartsWith("http://") -or $Href.StartsWith("https://")) {
+        return $Href
+    }
+
+    if ($Href.StartsWith("//")) {
+        $baseUri = [System.Uri]$BaseUrl
+        return "{0}:{1}" -f $baseUri.Scheme, $Href
+    }
+
+    try {
+        $absoluteUri = [System.Uri]::new([System.Uri]$BaseUrl, $Href)
+        return $absoluteUri.AbsoluteUri
+    }
+    catch {
+        return ""
+    }
+}
+
+function Test-IgnoredCandidateUrl {
+    param(
+        [string]$SourceUrl,
+        [string]$CandidateUrl
+    )
+
+    if ([string]::IsNullOrWhiteSpace($CandidateUrl)) {
+        return $true
+    }
+
+    foreach ($prefix in @("tel:", "mailto:", "#", "javascript:")) {
+        if ($CandidateUrl.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+            return $true
+        }
+    }
+
+    $sourceHost = ([System.Uri]$SourceUrl).Host.ToLowerInvariant()
+    $candidateHost = ([System.Uri]$CandidateUrl).Host.ToLowerInvariant()
+    $sameHost = $sourceHost -eq $candidateHost
+
+    foreach ($ignoredHost in @(
+            "instagram.com",
+            "www.instagram.com",
+            "facebook.com",
+            "www.facebook.com",
+            "rotary.org",
+            "www.rotary.org",
+            "my.rotary.org",
+            "clubmichelin.jp",
+            "www.rid2630.jp",
+            "rid2630.jp",
+            "www.rotary-yoneyama.or.jp",
+            "rotary-yoneyama.or.jp",
+            "www.rotary-bunko.gr.jp",
+            "rotary-bunko.gr.jp",
+            "www.endpolio.org",
+            "endpolio.org"
+        )) {
+        if ($candidateHost -eq $ignoredHost) {
+            return $true
+        }
+    }
+
+    if ($sameHost) {
+        return $true
+    }
+
+    return $false
+}
+
+function Get-WebPageTitle {
+    param(
+        [string]$Url,
+        [string]$LogFile
+    )
+
+    try {
+        $response = Invoke-WebRequest -Uri $Url -UseBasicParsing -TimeoutSec 20
+        $titleMatch = [regex]::Match($response.Content, '<title[^>]*>(.*?)</title>', [System.Text.RegularExpressions.RegexOptions]::IgnoreCase -bor [System.Text.RegularExpressions.RegexOptions]::Singleline)
+        if ($titleMatch.Success) {
+            return ($titleMatch.Groups[1].Value -replace '\s+', ' ').Trim()
+        }
+    }
+    catch {
+        Write-LogEntry -Level "warning" -Message "Failed to fetch candidate title: $Url" -Path $LogFile
+    }
+
+    return ""
+}
+
+function Convert-TitleToCompanyName {
+    param(
+        [string]$Title,
+        [string]$Url
+    )
+
+    $candidate = $Title
+    foreach ($separator in @('|', '-')) {
+        if ($candidate.Contains($separator)) {
+            $candidate = $candidate.Split($separator)[0]
+        }
+    }
+
+    $candidate = ($candidate -replace '\s+', ' ').Trim()
+    $candidate = ($candidate -replace '^【公式】', '').Trim()
+    if (-not [string]::IsNullOrWhiteSpace($candidate) -and $candidate.Length -ge 2) {
+        return $candidate
+    }
+
+    try {
+        $host = ([System.Uri]$Url).Host
+        return $host -replace '^www\.', ''
+    }
+    catch {
+        return ""
+    }
+}
+
+function Invoke-ExtractMemberCandidates {
+    param(
+        [string]$WorksetFile,
+        [string]$OutputFile,
+        [string]$LogFile
+    )
+
+    $worksetRows = @(Import-Csv -Path $WorksetFile)
+    $candidates = New-Object System.Collections.Generic.List[object]
+    $seenKeys = @{}
+
+    foreach ($source in $worksetRows) {
+        try {
+            $response = Invoke-WebRequest -Uri $source.source_url -UseBasicParsing -TimeoutSec 20
+        }
+        catch {
+            Write-LogEntry -Level "warning" -Message "Failed to fetch source page: $($source.source_url)" -Path $LogFile
+            continue
+        }
+
+        foreach ($link in @($response.Links)) {
+            $hrefProperty = $link.PSObject.Properties["href"]
+            if ($null -eq $hrefProperty) {
+                continue
+            }
+
+            $absoluteUrl = Resolve-AbsoluteUrl -BaseUrl $source.source_url -Href ([string]$hrefProperty.Value)
+            if (Test-IgnoredCandidateUrl -SourceUrl $source.source_url -CandidateUrl $absoluteUrl) {
+                continue
+            }
+
+            $title = Get-WebPageTitle -Url $absoluteUrl -LogFile $LogFile
+            $companyName = Convert-TitleToCompanyName -Title $title -Url $absoluteUrl
+            if ([string]::IsNullOrWhiteSpace($companyName)) {
+                continue
+            }
+
+            $dedupeKey = "{0}|{1}|{2}" -f $source.municipality, $companyName, $absoluteUrl
+            if ($seenKeys.ContainsKey($dedupeKey)) {
+                continue
+            }
+            $seenKeys[$dedupeKey] = $true
+
+            $candidates.Add([pscustomobject]@{
+                company_name          = $companyName
+                municipality          = $source.municipality
+                source_org            = $source.source_org
+                source_type           = $source.source_type
+                source_url            = $source.source_url
+                website_candidate_url = $absoluteUrl
+                title_snapshot        = $title
+            })
+        }
+    }
+
+    $outputRows = @($candidates | Sort-Object municipality, source_org, company_name)
+    Write-CsvBom -Rows $outputRows -Path $OutputFile
+    Write-LogEntry -Level "info" -Message "extract-member-candidates completed: candidates=$($outputRows.Count)" -Path $LogFile
+}
+
 function Invoke-ReportStatus {
     param(
         [string]$AreasFile,
@@ -916,6 +1103,7 @@ $realSalesUsableFile = Resolve-RepoPath -Path $RealSalesUsablePath
 $realSalesReportFile = Resolve-RepoPath -Path $RealSalesReportPath
 $sourceRegistryFile = Resolve-RepoPath -Path $SourceRegistryPath
 $sourceWorksetFile = Resolve-RepoPath -Path $SourceWorksetPath
+$extractedMemberCandidatesFile = Resolve-RepoPath -Path $ExtractedMemberCandidatesPath
 
 switch ($Command) {
     "resolve-areas" {
@@ -935,5 +1123,8 @@ switch ($Command) {
     }
     "build-source-workset" {
         Invoke-BuildSourceWorkset -ResolvedFile $realResolvedFile -RegistryFile $sourceRegistryFile -OutputFile $sourceWorksetFile -LogFile $logFile
+    }
+    "extract-member-candidates" {
+        Invoke-ExtractMemberCandidates -WorksetFile $sourceWorksetFile -OutputFile $extractedMemberCandidatesFile -LogFile $logFile
     }
 }
