@@ -820,6 +820,63 @@ function Test-AddressMatchesMunicipality {
     return $Address.Contains($Municipality)
 }
 
+function Test-WebUsableCompanyNameQuality {
+    param([string]$CompanyName)
+
+    if ([string]::IsNullOrWhiteSpace($CompanyName)) {
+        return $false
+    }
+
+    foreach ($pattern in @(
+            '^株式会社$',
+            '^不動産$',
+            '^【株式会社',
+            '^Orico$',
+            '^ロータリーの友$',
+            '^中部電力パワーグリッドWebサイト$',
+            '^通信・ICTサービス・ソリューション$',
+            '^マネー信用の蔵！.*',
+            '^アメニティーな社会の創造に役立つ$',
+            '^成田ケーブル$'
+        )) {
+        if ($CompanyName -match $pattern) {
+            return $false
+        }
+    }
+
+    return $true
+}
+
+function Test-WebUsableAddressQuality {
+    param([string]$Address)
+
+    if ([string]::IsNullOrWhiteSpace($Address)) {
+        return $false
+    }
+
+    foreach ($pattern in @(
+            'HOME',
+            'CONTACT',
+            'Instagram',
+            'さらに読み込む',
+            'ページの先頭',
+            '愛知県全域',
+            '信託契約代理業',
+            '黒龍芝公園ビル',
+            'フリーダイヤル',
+            '代表$',
+            '〒.*〒',
+            '^\D?[\/ー・]\s*',
+            '\[$'
+        )) {
+        if ($Address -match $pattern) {
+            return $false
+        }
+    }
+
+    return $true
+}
+
 function Invoke-BuildSalesListFromCompanyMaster {
     param(
         [string]$CompanyMasterFile,
@@ -830,7 +887,12 @@ function Invoke-BuildSalesListFromCompanyMaster {
     )
 
     $allRows = @(Import-Csv -Path $CompanyMasterFile | Sort-Object -Property @{ Expression = { [int]$_.priority_score }; Descending = $true }, municipality, company_name)
-    $usableRows = @($allRows | Where-Object { $_.is_usable -eq "true" -and (Test-AddressMatchesMunicipality -Municipality $_.municipality -Address $_.address) } | ForEach-Object {
+    $usableRows = @($allRows | Where-Object {
+            $_.is_usable -eq "true" -and
+            (Test-AddressMatchesMunicipality -Municipality $_.municipality -Address $_.address) -and
+            (Test-WebUsableCompanyNameQuality -CompanyName $_.company_name) -and
+            (Test-WebUsableAddressQuality -Address $_.address)
+        } | ForEach-Object {
             [pscustomobject]@{
                 priority_rank     = $_.priority_rank
                 priority_score    = $_.priority_score
@@ -856,7 +918,12 @@ function Invoke-BuildSalesListFromCompanyMaster {
     $reportRows = @(
         foreach ($group in ($allRows | Group-Object municipality | Sort-Object Name)) {
             $rows = @($group.Group)
-            $usableRowsForMunicipality = @($rows | Where-Object { $_.is_usable -eq "true" -and (Test-AddressMatchesMunicipality -Municipality $_.municipality -Address $_.address) })
+            $usableRowsForMunicipality = @($rows | Where-Object {
+                    $_.is_usable -eq "true" -and
+                    (Test-AddressMatchesMunicipality -Municipality $_.municipality -Address $_.address) -and
+                    (Test-WebUsableCompanyNameQuality -CompanyName $_.company_name) -and
+                    (Test-WebUsableAddressQuality -Address $_.address)
+                })
             [pscustomobject]@{
                 municipality      = $group.Name
                 total_count       = $rows.Count
@@ -1153,11 +1220,15 @@ function Normalize-PostalAddress {
             $normalized = $normalized.Substring($prefectureMatch.Index)
         }
     }
+    $normalized = ($normalized -replace '^[0-9０-９]+\s+', '').Trim()
+    $normalized = ($normalized -replace '^(所|社)\s+', '').Trim()
     $normalized = ($normalized -replace '^[A-Z]\s+', '').Trim()
     $normalized = ($normalized -replace '^(所在地|住所)\s*[:：]?\s*', '').Trim()
     $normalized = ($normalized -replace '(Tel|TEL|電話|FAX|営業時間|営業日|定休日|受付時間|メール|Mail|E-mail|Copyright|©).*$','').Trim()
-    $normalized = ($normalized -replace '(HOME ABOUT SERVICE COMPANY CONTACT|GROUP HO.*|グループコーポレートサイト.*|Instagram.*|さらに読み込む.*|でフォロー.*|NEWS.*|MENU.*|TAKE OUT.*|店舗情報.*|代表者.*|昨日、.*)$','').Trim()
+    $normalized = ($normalized -replace '(HOME ABOUT SERVICE COMPANY CONTACT|GROUP HO.*|グループコーポレートサイト.*|Instagram.*|さらに読み込む.*|でフォロー.*|NEWS.*|MENU.*|TAKE OUT.*|店舗情報.*|代表者.*|昨日、.*|アクセス.*|℡.*|フリーダイヤル.*|ページの先頭.*)$','').Trim()
     $normalized = ($normalized -replace '^様\s+', '').Trim()
+    $normalized = ($normalized -replace '/\s*$', '').Trim()
+    $normalized = ($normalized -replace '\[$', '').Trim()
     return $normalized
 }
 
