@@ -1117,13 +1117,84 @@ function Find-PhoneNumber {
     return ""
 }
 
+function Normalize-PostalAddress {
+    param([string]$Value)
+
+    if ([string]::IsNullOrWhiteSpace($Value)) {
+        return ""
+    }
+
+    $normalized = $Value
+    $normalized = ($normalized -replace '<[^>]+>', ' ')
+    $normalized = [System.Net.WebUtility]::HtmlDecode($normalized)
+    $normalized = ($normalized -replace '\s+', ' ').Trim()
+    $normalized = ($normalized -replace '^(所在地|住所)\s*[:：]?\s*', '').Trim()
+    $normalized = ($normalized -replace '(Tel|TEL|電話|FAX|営業時間|営業日|定休日|受付時間|メール|Mail|E-mail|Copyright|©).*$','').Trim()
+    return $normalized
+}
+
 function Find-PostalAddress {
-    param([string]$Text)
+    param(
+        [string]$Text,
+        [string]$Html
+    )
+
+    if (-not [string]::IsNullOrWhiteSpace($Html)) {
+        $addressTagMatch = [regex]::Match($Html, '(?is)<address[^>]*>(.*?)</address>')
+        if ($addressTagMatch.Success) {
+            $value = Normalize-PostalAddress -Value $addressTagMatch.Groups[1].Value
+            if (-not [string]::IsNullOrWhiteSpace($value) -and $value -match '(〒\d{3}-\d{4}|北海道|東京都|(?:京都|大阪)府|.{2,4}県)') {
+                return $value
+            }
+        }
+
+        $streetMatch = [regex]::Match($Html, '"streetAddress"\s*:\s*"([^"]+)"')
+        if ($streetMatch.Success) {
+            $postalCode = ""
+            $region = ""
+            $locality = ""
+
+            $postalMatch = [regex]::Match($Html, '"postalCode"\s*:\s*"([^"]+)"')
+            if ($postalMatch.Success) {
+                $postalCode = $postalMatch.Groups[1].Value
+            }
+
+            $regionMatch = [regex]::Match($Html, '"addressRegion"\s*:\s*"([^"]+)"')
+            if ($regionMatch.Success) {
+                $region = $regionMatch.Groups[1].Value
+            }
+
+            $localityMatch = [regex]::Match($Html, '"addressLocality"\s*:\s*"([^"]+)"')
+            if ($localityMatch.Success) {
+                $locality = $localityMatch.Groups[1].Value
+            }
+
+            $value = Normalize-PostalAddress -Value ("{0} {1}{2}{3}" -f $postalCode, $region, $locality, $streetMatch.Groups[1].Value)
+            if (-not [string]::IsNullOrWhiteSpace($value)) {
+                return $value
+            }
+        }
+    }
+
+    $patterns = @(
+        '(所在地|住所)\s*[:：]?\s*(〒\d{3}-\d{4}\s*)?(北海道|東京都|(?:京都|大阪)府|.{2,4}県).{5,100}?((TEL|電話|FAX|営業時間|営業日|定休日|受付時間|メール|Mail|E-mail|Copyright|©)|$)',
+        '(〒\d{3}-\d{4}\s*(北海道|東京都|(?:京都|大阪)府|.{2,4}県).{5,100}?)(?=(TEL|電話|FAX|営業時間|営業日|定休日|受付時間|メール|Mail|E-mail|Copyright|©|$))',
+        '((北海道|東京都|(?:京都|大阪)府|.{2,4}県).{8,100}?)(?=(TEL|電話|FAX|営業時間|営業日|定休日|受付時間|メール|Mail|E-mail|Copyright|©|$))'
+    )
+
+    foreach ($pattern in $patterns) {
+        $match = [regex]::Match($Text, $pattern)
+        if ($match.Success) {
+            $value = Normalize-PostalAddress -Value $match.Groups[0].Value
+            if (-not [string]::IsNullOrWhiteSpace($value)) {
+                return $value
+            }
+        }
+    }
 
     $match = [regex]::Match($Text, '(〒\d{3}-\d{4}\s*[^0-9]{0,4}.{5,80}?)((TEL|電話|FAX|営業時間|Copyright|©)|$)')
     if ($match.Success) {
-        $value = ($match.Groups[1].Value -replace '\s+', ' ').Trim()
-        $value = ($value -replace '(Tel|TEL|電話).*$','').Trim()
+        $value = Normalize-PostalAddress -Value $match.Groups[1].Value
         return $value
     }
 
@@ -1428,7 +1499,7 @@ function Invoke-ExtractCompanyDetails {
         $contactFormUrl = ""
 
         if ($null -ne $page) {
-            $address = Find-PostalAddress -Text $page.Text
+            $address = Find-PostalAddress -Text $page.Text -Html $page.Html
             $phone = Find-PhoneNumber -Text $page.Text
             $contactFormUrl = Find-ContactFormUrl -BaseUrl $website -Response $page.Response
         }
