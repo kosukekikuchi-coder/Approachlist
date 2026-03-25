@@ -61,15 +61,15 @@ Input municipalities:
 Latest result:
 
 - total rows: `75`
-- usable rows: `51`
+- usable rows: `44`
 
 Municipality breakdown:
 
-- 岡崎市: `27 / usable 19`
+- 岡崎市: `29 / usable 17`
 - 津山市: `5 / usable 5`
-- 高山市: `21 / usable 11`
-- 成田市: `16 / usable 11`
-- 長浜市: `6 / usable 5`
+- 高山市: `22 / usable 9`
+- 成田市: `16 / usable 9`
+- 長浜市: `6 / usable 4`
 
 Key files:
 
@@ -84,6 +84,7 @@ Key files:
 - Official-site-origin `contact_form_url` is captured when available.
 - The pipeline already produces usable rows without hand-maintained `member_companies.csv` / `company_details.csv`.
 - Cleaner Narita source pages improved the five-city usable count.
+- The usable export now requires municipality-match in the extracted address, which reduces obvious cross-area false positives.
 
 ## Current gaps
 

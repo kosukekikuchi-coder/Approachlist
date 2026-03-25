@@ -807,6 +807,19 @@ function Invoke-BuildRealSalesList {
     Write-LogEntry -Level "info" -Message "build-real-sales-list completed: total=$($allRows.Count) usable=$($usableRows.Count) municipalities=$($reportRows.Count)" -Path $LogFile
 }
 
+function Test-AddressMatchesMunicipality {
+    param(
+        [string]$Municipality,
+        [string]$Address
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Municipality) -or [string]::IsNullOrWhiteSpace($Address)) {
+        return $false
+    }
+
+    return $Address.Contains($Municipality)
+}
+
 function Invoke-BuildSalesListFromCompanyMaster {
     param(
         [string]$CompanyMasterFile,
@@ -817,7 +830,7 @@ function Invoke-BuildSalesListFromCompanyMaster {
     )
 
     $allRows = @(Import-Csv -Path $CompanyMasterFile | Sort-Object -Property @{ Expression = { [int]$_.priority_score }; Descending = $true }, municipality, company_name)
-    $usableRows = @($allRows | Where-Object { $_.is_usable -eq "true" } | ForEach-Object {
+    $usableRows = @($allRows | Where-Object { $_.is_usable -eq "true" -and (Test-AddressMatchesMunicipality -Municipality $_.municipality -Address $_.address) } | ForEach-Object {
             [pscustomobject]@{
                 priority_rank     = $_.priority_rank
                 priority_score    = $_.priority_score
@@ -837,15 +850,17 @@ function Invoke-BuildSalesListFromCompanyMaster {
                 local_focus       = $_.local_focus
                 network_affinity  = $_.network_affinity
                 contactability    = $_.contactability
+                municipality_match = "true"
             }
         })
     $reportRows = @(
         foreach ($group in ($allRows | Group-Object municipality | Sort-Object Name)) {
             $rows = @($group.Group)
+            $usableRowsForMunicipality = @($rows | Where-Object { $_.is_usable -eq "true" -and (Test-AddressMatchesMunicipality -Municipality $_.municipality -Address $_.address) })
             [pscustomobject]@{
                 municipality      = $group.Name
                 total_count       = $rows.Count
-                usable_count      = @($rows | Where-Object { $_.is_usable -eq "true" }).Count
+                usable_count      = $usableRowsForMunicipality.Count
                 top_rank_count    = @($rows | Where-Object { $_.priority_rank -eq "A" }).Count
                 contact_form_count = @($rows | Where-Object { -not [string]::IsNullOrWhiteSpace($_.contact_form_url) }).Count
             }
@@ -1128,8 +1143,21 @@ function Normalize-PostalAddress {
     $normalized = ($normalized -replace '<[^>]+>', ' ')
     $normalized = [System.Net.WebUtility]::HtmlDecode($normalized)
     $normalized = ($normalized -replace '\s+', ' ').Trim()
+    $postalMatch = [regex]::Match($normalized, '〒\d{3}-\d{4}')
+    if ($postalMatch.Success) {
+        $normalized = $normalized.Substring($postalMatch.Index)
+    }
+    else {
+        $prefectureMatch = [regex]::Match($normalized, '(北海道|東京都|(?:京都|大阪)府|.{2,4}県)')
+        if ($prefectureMatch.Success -and $prefectureMatch.Index -gt 0) {
+            $normalized = $normalized.Substring($prefectureMatch.Index)
+        }
+    }
+    $normalized = ($normalized -replace '^[A-Z]\s+', '').Trim()
     $normalized = ($normalized -replace '^(所在地|住所)\s*[:：]?\s*', '').Trim()
     $normalized = ($normalized -replace '(Tel|TEL|電話|FAX|営業時間|営業日|定休日|受付時間|メール|Mail|E-mail|Copyright|©).*$','').Trim()
+    $normalized = ($normalized -replace '(HOME ABOUT SERVICE COMPANY CONTACT|GROUP HO.*|グループコーポレートサイト.*|Instagram.*|さらに読み込む.*|でフォロー.*|NEWS.*|MENU.*|TAKE OUT.*|店舗情報.*|代表者.*|昨日、.*)$','').Trim()
+    $normalized = ($normalized -replace '^様\s+', '').Trim()
     return $normalized
 }
 
@@ -1251,14 +1279,14 @@ function Find-CorporateEntityInText {
     }
 
     foreach ($pattern in @(
+            '([^|｜│\-－/／*＊]+株式会社)',
+            '([^|｜│\-－/／*＊]+有限会社)',
+            '([^|｜│\-－/／*＊]+合同会社)',
             '(株式会社[^|｜│\-－/／*＊]+)',
             '(有限会社[^|｜│\-－/／*＊]+)',
             '(合資会社[^|｜│\-－/／*＊]+)',
             '(合名会社[^|｜│\-－/／*＊]+)',
             '(合同会社[^|｜│\-－/／*＊]+)',
-            '([^|｜│\-－/／*＊]+株式会社)',
-            '([^|｜│\-－/／*＊]+有限会社)',
-            '([^|｜│\-－/／*＊]+合同会社)',
             '(司法書士法人[^|｜│\-－/／*＊]+)',
             '(医療法人[^|｜│\-－/／*＊]+)',
             '(学校法人[^|｜│\-－/／*＊]+)'
@@ -1400,6 +1428,22 @@ function Get-NormalizedMemberCompanyName {
     $value = ($value -replace '^磯貝彫刻$', '有限会社磯貝彫刻').Trim()
     $value = ($value -replace '^新車・軽自動車リース専門店（株）江山自動車$', '株式会社江山自動車').Trim()
     $value = ($value -replace '^注文住宅 アーツ・ラボ$', 'アーツ・ラボ').Trim()
+    $value = ($value -replace '^株式会社の公式ホームページ$', '').Trim()
+    $value = ($value -replace '^成田市・銚子市の看板製作・ホームページ制作・印刷$', '山本印刷').Trim()
+    $value = ($value -replace '^千葉の注文住宅なら創業125年のヒラヤマホーム$', 'ヒラヤマホーム').Trim()
+    $value = ($value -replace '^千葉県成田市 園芸療法 島田建設株式会社$', '島田建設株式会社').Trim()
+    $value = ($value -replace '^伝統「火造り技法」の刃物鍛冶、正次郎鋏刃物工芸$', '正次郎鋏刃物工芸').Trim()
+    $value = ($value -replace '^映像・音響・制御メーカのピーテック$', 'ピーテック').Trim()
+    $value = ($value -replace '^国指定重要文化財 飛騨高山 料亭『洲さき』$', '料亭 洲さき').Trim()
+    $value = ($value -replace '^地酒通販│飛騨酒蔵 山車$', '飛騨酒蔵 山車').Trim()
+    $value = ($value -replace '^津山市で和食なら個室完備の$', 'お料理わらうかど。').Trim()
+    $value = ($value -replace '^株式会社あおばは長浜市から地域の教育に貢献し続けます$', '株式会社あおば').Trim()
+    $value = ($value -replace '^オンデマンド印刷・バリアブル印刷・長尺印刷の高山印刷株式会社.*$', '高山印刷株式会社').Trim()
+    $value = ($value -replace '^コンクリート製品製造、薪・ペレットストーブ、融雪を取扱う岐阜県飛騨高山市『富士コンクリート工業株式会社$', '富士コンクリート工業株式会社').Trim()
+    $value = ($value -replace '^ツアーコンダクター（添乗員）派遣・研修なら人材派遣の株式会社$', '株式会社TEI').Trim()
+    $value = ($value -replace '^飛騨高山 株式会社$', '株式会社みの谷').Trim()
+    $value = ($value -replace '^パッケージデザイン・企画・製造・販売・食品用包装資材・包装機械販売『株式会社$', '株式会社斐太パックス').Trim()
+    $value = ($value -replace '^【株式会社$', '').Trim()
 
     $titleCorporateName = Find-CorporateEntityInText -Text ([string]$TitleSnapshot)
     if ([string]::IsNullOrWhiteSpace($value) -and -not [string]::IsNullOrWhiteSpace($titleCorporateName)) {
