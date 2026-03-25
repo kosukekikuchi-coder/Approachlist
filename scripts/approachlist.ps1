@@ -964,6 +964,20 @@ function Test-IgnoredCandidateUrl {
             "www.instagram.com",
             "facebook.com",
             "www.facebook.com",
+            "b-mall.ne.jp",
+            "www.b-mall.ne.jp",
+            "chiba-hatarakikata.com",
+            "www.chiba-hatarakikata.com",
+            "chiba-saiyoryoku.jp",
+            "www.chiba-saiyoryoku.jp",
+            "esod-neo.com",
+            "www.esod-neo.com",
+            "jcci.or.jp",
+            "www.jcci.or.jp",
+            "narita-yeg.org",
+            "www.narita-yeg.org",
+            "nta.go.jp",
+            "www.nta.go.jp",
             "rotary.org",
             "www.rotary.org",
             "my.rotary.org",
@@ -1258,14 +1272,14 @@ function Get-NormalizedMemberCompanyName {
 
     $value = [string]$CompanyName
     $patterns = @(
-        '(株式会社[^|\-|｜]+)',
-        '(有限会社[^|\-|｜]+)',
-        '(合資会社[^|\-|｜]+)',
-        '(合名会社[^|\-|｜]+)',
-        '(合同会社[^|\-|｜]+)',
-        '(司法書士法人[^|\-|｜]+)',
-        '(医療法人[^|\-|｜]+)',
-        '(学校法人[^|\-|｜]+)'
+        '(株式会社[^|｜│\-－/／*＊]+)',
+        '(有限会社[^|｜│\-－/／*＊]+)',
+        '(合資会社[^|｜│\-－/／*＊]+)',
+        '(合名会社[^|｜│\-－/／*＊]+)',
+        '(合同会社[^|｜│\-－/／*＊]+)',
+        '(司法書士法人[^|｜│\-－/／*＊]+)',
+        '(医療法人[^|｜│\-－/／*＊]+)',
+        '(学校法人[^|｜│\-－/／*＊]+)'
     )
 
     foreach ($pattern in $patterns) {
@@ -1282,7 +1296,10 @@ function Get-NormalizedMemberCompanyName {
     $value = ($value -replace '^(岡崎 印刷会社)$', '').Trim()
     $value = ($value -replace '^(岡崎市)$', '').Trim()
     $value = ($value -replace '^(株式会社 公式サイト)$', '').Trim()
+    $value = ($value -replace '^(株式会社の公式ホームページ)$', '').Trim()
     $value = ($value -replace '^(転送)$', '').Trim()
+    $value = ($value -replace 'にお任せください$', '').Trim()
+    $value = ($value -replace 'の公式ホームページ$', '').Trim()
     $value = ($value -replace '^(みなさまの健康で豊かな食生活を豆を通じて応援する「ニチレト」)$', 'ニチレト').Trim()
     $value = ($value -replace '^しゃぶしゃぶ ステーキ桂$', 'しゃぶしゃぶ ステーキ桂').Trim()
     $value = ($value -replace '^ティ・ケイスピリッツ有限会社.*$', 'ティ・ケイスピリッツ有限会社').Trim()
@@ -1331,12 +1348,17 @@ function Test-NormalizedMemberCandidate {
     foreach ($blocked in @(
             '国際ロータリー',
             'ロータリー第',
+            '商工会議所',
+            '青年部',
+            'ポータルサイト',
             '掃除代行',
             '賃貸・売買',
             'お墓・墓・墓石専門店',
             '岡崎 印刷会社',
             '転送',
-            '公式サイト'
+            '公式サイト',
+            'Home',
+            '会社概要'
         )) {
         if ($NormalizedName -like "*$blocked*") {
             return $false
