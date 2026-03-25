@@ -36,6 +36,9 @@ powershell -ExecutionPolicy Bypass -File .\scripts\approachlist.ps1 run-web-pipe
 - `data/out/extracted_member_candidates.csv`
 - `data/out/normalized_member_companies.csv`
 - `data/out/extracted_company_details.csv`
+- `data/out/web_sales_list.csv`
+- `data/out/web_sales_list_usable.csv`
+- `data/out/web_sales_list_report.csv`
 - `logs/run.log`
 
 ## Notes
@@ -54,4 +57,4 @@ powershell -ExecutionPolicy Bypass -File .\scripts\approachlist.ps1 run-web-pipe
 - `normalize-member-candidates` trims noisy titles down toward `member_companies.csv`-style rows for the next detail step.
 - `extract-company-details` is a live-fetch prototype that inspects `website_candidate_url` and derives `address`, `phone`, `contact_form_url`, and `detail_source_url`.
 - `run-real-pipeline` currently covers the region-selection side and usable-list generation side. The source crawling side is being added as separate prototype commands.
-- `run-web-pipeline` chains `build-source-workset` -> `extract-member-candidates` -> `normalize-member-candidates` -> `extract-company-details` -> `build-company-master` for a small live-crawl prototype.
+- `run-web-pipeline` chains `build-source-workset` -> `extract-member-candidates` -> `normalize-member-candidates` -> `extract-company-details` -> `build-company-master` -> usable-list/report export for a small live-crawl prototype.

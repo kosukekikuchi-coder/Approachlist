@@ -23,7 +23,10 @@
     [string]$SourceWorksetPath = "data/out/source_workset.csv",
     [string]$ExtractedMemberCandidatesPath = "data/out/extracted_member_candidates.csv",
     [string]$NormalizedMemberCompaniesPath = "data/out/normalized_member_companies.csv",
-    [string]$ExtractedCompanyDetailsPath = "data/out/extracted_company_details.csv"
+    [string]$ExtractedCompanyDetailsPath = "data/out/extracted_company_details.csv",
+    [string]$WebSalesListPath = "data/out/web_sales_list.csv",
+    [string]$WebSalesUsablePath = "data/out/web_sales_list_usable.csv",
+    [string]$WebSalesReportPath = "data/out/web_sales_list_report.csv"
 )
 
 Set-StrictMode -Version Latest
@@ -804,6 +807,58 @@ function Invoke-BuildRealSalesList {
     Write-LogEntry -Level "info" -Message "build-real-sales-list completed: total=$($allRows.Count) usable=$($usableRows.Count) municipalities=$($reportRows.Count)" -Path $LogFile
 }
 
+function Invoke-BuildSalesListFromCompanyMaster {
+    param(
+        [string]$CompanyMasterFile,
+        [string]$AllOutputFile,
+        [string]$UsableOutputFile,
+        [string]$ReportOutputFile,
+        [string]$LogFile
+    )
+
+    $allRows = @(Import-Csv -Path $CompanyMasterFile | Sort-Object -Property @{ Expression = { [int]$_.priority_score }; Descending = $true }, municipality, company_name)
+    $usableRows = @($allRows | Where-Object { $_.is_usable -eq "true" } | ForEach-Object {
+            [pscustomobject]@{
+                priority_rank     = $_.priority_rank
+                priority_score    = $_.priority_score
+                company_name      = $_.company_name
+                municipality      = $_.municipality
+                phone             = $_.phone
+                website           = $_.website
+                contact_form_url  = $_.contact_form_url
+                address           = $_.address
+                source_org        = $_.source_org
+                score_reason      = $_.score_reason
+                score_confidence  = $_.score_confidence
+                detail_source_url = $_.detail_source_url
+                source_count      = $_.source_count
+                source_summary    = $_.source_summary
+                industry_fit      = $_.industry_fit
+                local_focus       = $_.local_focus
+                network_affinity  = $_.network_affinity
+                contactability    = $_.contactability
+            }
+        })
+    $reportRows = @(
+        foreach ($group in ($allRows | Group-Object municipality | Sort-Object Name)) {
+            $rows = @($group.Group)
+            [pscustomobject]@{
+                municipality      = $group.Name
+                total_count       = $rows.Count
+                usable_count      = @($rows | Where-Object { $_.is_usable -eq "true" }).Count
+                top_rank_count    = @($rows | Where-Object { $_.priority_rank -eq "A" }).Count
+                contact_form_count = @($rows | Where-Object { -not [string]::IsNullOrWhiteSpace($_.contact_form_url) }).Count
+            }
+        }
+    )
+
+    Write-CsvBom -Rows $allRows -Path $AllOutputFile
+    Write-CsvBom -Rows $usableRows -Path $UsableOutputFile
+    Write-CsvBom -Rows $reportRows -Path $ReportOutputFile
+
+    Write-LogEntry -Level "info" -Message "build-sales-list-from-company-master completed: total=$($allRows.Count) usable=$($usableRows.Count) municipalities=$($reportRows.Count)" -Path $LogFile
+}
+
 function Invoke-RunRealPipeline {
     param(
         [string]$AreasFile,
@@ -1390,6 +1445,9 @@ function Invoke-RunWebPipeline {
         [string]$NormalizedMembersFile,
         [string]$DetailsFile,
         [string]$CompanyMasterFile,
+        [string]$AllOutputFile,
+        [string]$UsableOutputFile,
+        [string]$ReportOutputFile,
         [string]$LogFile
     )
 
@@ -1398,6 +1456,7 @@ function Invoke-RunWebPipeline {
     Invoke-NormalizeMemberCandidates -CandidatesFile $CandidatesFile -OutputFile $NormalizedMembersFile -LogFile $LogFile
     Invoke-ExtractCompanyDetails -MembersFile $NormalizedMembersFile -OutputFile $DetailsFile -LogFile $LogFile
     Invoke-BuildCompanyMasterCommand -ResolvedFile $ResolvedFile -MembersFile $NormalizedMembersFile -DetailsFile $DetailsFile -ScoringFile $scoringFile -OutputFile $CompanyMasterFile -LogFile $LogFile
+    Invoke-BuildSalesListFromCompanyMaster -CompanyMasterFile $CompanyMasterFile -AllOutputFile $AllOutputFile -UsableOutputFile $UsableOutputFile -ReportOutputFile $ReportOutputFile -LogFile $LogFile
     Write-LogEntry -Level "info" -Message "run-web-pipeline completed" -Path $LogFile
 }
 
@@ -1467,6 +1526,9 @@ $sourceWorksetFile = Resolve-RepoPath -Path $SourceWorksetPath
 $extractedMemberCandidatesFile = Resolve-RepoPath -Path $ExtractedMemberCandidatesPath
 $normalizedMemberCompaniesFile = Resolve-RepoPath -Path $NormalizedMemberCompaniesPath
 $extractedCompanyDetailsFile = Resolve-RepoPath -Path $ExtractedCompanyDetailsPath
+$webSalesListFile = Resolve-RepoPath -Path $WebSalesListPath
+$webSalesUsableFile = Resolve-RepoPath -Path $WebSalesUsablePath
+$webSalesReportFile = Resolve-RepoPath -Path $WebSalesReportPath
 
 switch ($Command) {
     "resolve-areas" {
@@ -1497,6 +1559,6 @@ switch ($Command) {
         Invoke-ExtractCompanyDetails -MembersFile $normalizedMemberCompaniesFile -OutputFile $extractedCompanyDetailsFile -LogFile $logFile
     }
     "run-web-pipeline" {
-        Invoke-RunWebPipeline -ResolvedFile $realResolvedFile -RegistryFile $sourceRegistryFile -WorksetFile $sourceWorksetFile -CandidatesFile $extractedMemberCandidatesFile -NormalizedMembersFile $normalizedMemberCompaniesFile -DetailsFile $extractedCompanyDetailsFile -CompanyMasterFile $companyMasterFile -LogFile $logFile
+        Invoke-RunWebPipeline -ResolvedFile $realResolvedFile -RegistryFile $sourceRegistryFile -WorksetFile $sourceWorksetFile -CandidatesFile $extractedMemberCandidatesFile -NormalizedMembersFile $normalizedMemberCompaniesFile -DetailsFile $extractedCompanyDetailsFile -CompanyMasterFile $companyMasterFile -AllOutputFile $webSalesListFile -UsableOutputFile $webSalesUsableFile -ReportOutputFile $webSalesReportFile -LogFile $logFile
     }
 }
