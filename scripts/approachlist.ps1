@@ -1,6 +1,6 @@
 ﻿param(
     [Parameter(Mandatory = $true, Position = 0)]
-    [ValidateSet("resolve-areas", "build-company-master", "report-status", "build-real-sales-list", "run-real-pipeline", "build-source-workset", "extract-member-candidates", "normalize-member-candidates", "extract-company-details")]
+    [ValidateSet("resolve-areas", "build-company-master", "report-status", "build-real-sales-list", "run-real-pipeline", "build-source-workset", "extract-member-candidates", "normalize-member-candidates", "extract-company-details", "run-web-pipeline")]
     [string]$Command,
 
     [int]$MinPopulation = 100000,
@@ -679,7 +679,7 @@ function Invoke-BuildCompanyMasterCommand {
     $details = Import-Csv -Path $DetailsFile
     $scoring = Read-SimpleYaml -Path $ScoringFile
 
-    $outputRows = Invoke-BuildCompanyMaster -MemberRows $members -DetailRows $details -ScoringConfig $scoring -LogFile $LogFile
+    $outputRows = @(Invoke-BuildCompanyMaster -MemberRows $members -DetailRows $details -ScoringConfig $scoring -LogFile $LogFile)
     Write-CsvBom -Rows $outputRows -Path $OutputFile
     Write-LogEntry -Level "info" -Message "build-company-master completed: output=$($outputRows.Count)" -Path $LogFile
 }
@@ -1381,6 +1381,26 @@ function Invoke-ExtractCompanyDetails {
     Write-LogEntry -Level "info" -Message "extract-company-details completed: rows=$($outputRows.Count)" -Path $LogFile
 }
 
+function Invoke-RunWebPipeline {
+    param(
+        [string]$ResolvedFile,
+        [string]$RegistryFile,
+        [string]$WorksetFile,
+        [string]$CandidatesFile,
+        [string]$NormalizedMembersFile,
+        [string]$DetailsFile,
+        [string]$CompanyMasterFile,
+        [string]$LogFile
+    )
+
+    Invoke-BuildSourceWorkset -ResolvedFile $ResolvedFile -RegistryFile $RegistryFile -OutputFile $WorksetFile -LogFile $LogFile
+    Invoke-ExtractMemberCandidates -WorksetFile $WorksetFile -OutputFile $CandidatesFile -LogFile $LogFile
+    Invoke-NormalizeMemberCandidates -CandidatesFile $CandidatesFile -OutputFile $NormalizedMembersFile -LogFile $LogFile
+    Invoke-ExtractCompanyDetails -MembersFile $NormalizedMembersFile -OutputFile $DetailsFile -LogFile $LogFile
+    Invoke-BuildCompanyMasterCommand -ResolvedFile $ResolvedFile -MembersFile $NormalizedMembersFile -DetailsFile $DetailsFile -ScoringFile $scoringFile -OutputFile $CompanyMasterFile -LogFile $LogFile
+    Write-LogEntry -Level "info" -Message "run-web-pipeline completed" -Path $LogFile
+}
+
 function Invoke-ReportStatus {
     param(
         [string]$AreasFile,
@@ -1475,5 +1495,8 @@ switch ($Command) {
     }
     "extract-company-details" {
         Invoke-ExtractCompanyDetails -MembersFile $normalizedMemberCompaniesFile -OutputFile $extractedCompanyDetailsFile -LogFile $logFile
+    }
+    "run-web-pipeline" {
+        Invoke-RunWebPipeline -ResolvedFile $realResolvedFile -RegistryFile $sourceRegistryFile -WorksetFile $sourceWorksetFile -CandidatesFile $extractedMemberCandidatesFile -NormalizedMembersFile $normalizedMemberCompaniesFile -DetailsFile $extractedCompanyDetailsFile -CompanyMasterFile $companyMasterFile -LogFile $logFile
     }
 }

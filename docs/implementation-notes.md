@@ -16,6 +16,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\approachlist.ps1 extract-memb
 powershell -ExecutionPolicy Bypass -File .\scripts\approachlist.ps1 normalize-member-candidates
 powershell -ExecutionPolicy Bypass -File .\scripts\approachlist.ps1 extract-company-details
 powershell -ExecutionPolicy Bypass -File .\scripts\approachlist.ps1 run-real-pipeline
+powershell -ExecutionPolicy Bypass -File .\scripts\approachlist.ps1 run-web-pipeline
 ```
 
 ## Files
@@ -53,3 +54,4 @@ powershell -ExecutionPolicy Bypass -File .\scripts\approachlist.ps1 run-real-pip
 - `normalize-member-candidates` trims noisy titles down toward `member_companies.csv`-style rows for the next detail step.
 - `extract-company-details` is a live-fetch prototype that inspects `website_candidate_url` and derives `address`, `phone`, `contact_form_url`, and `detail_source_url`.
 - `run-real-pipeline` currently covers the region-selection side and usable-list generation side. The source crawling side is being added as separate prototype commands.
+- `run-web-pipeline` chains `build-source-workset` -> `extract-member-candidates` -> `normalize-member-candidates` -> `extract-company-details` -> `build-company-master` for a small live-crawl prototype.
