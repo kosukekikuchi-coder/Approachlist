@@ -1,6 +1,6 @@
 param(
     [Parameter(Mandatory = $true, Position = 0)]
-    [ValidateSet("resolve-areas", "build-company-master", "report-status", "build-real-sales-list")]
+    [ValidateSet("resolve-areas", "build-company-master", "report-status", "build-real-sales-list", "run-real-pipeline", "build-source-workset")]
     [string]$Command,
 
     [int]$MinPopulation = 100000,
@@ -15,9 +15,12 @@ param(
     [string]$ProgressReportPath = "data/out/progress_report.csv",
     [string]$LogPath = "logs/run.log",
     [string]$RealDataDirectory = "data/real",
+    [string]$RealResolvedAreasPath = "data/out/real_resolved_areas.csv",
     [string]$RealSalesListPath = "data/out/real_sales_list.csv",
     [string]$RealSalesUsablePath = "data/out/real_sales_list_usable.csv",
-    [string]$RealSalesReportPath = "data/out/real_sales_list_report.csv"
+    [string]$RealSalesReportPath = "data/out/real_sales_list_report.csv",
+    [string]$SourceRegistryPath = "config/source_registry.csv",
+    [string]$SourceWorksetPath = "data/out/source_workset.csv"
 )
 
 Set-StrictMode -Version Latest
@@ -701,9 +704,26 @@ function Get-RealDataPairs {
     return $pairs
 }
 
+function Get-SelectedMunicipalityMap {
+    param([string]$ResolvedFile)
+
+    if ([string]::IsNullOrWhiteSpace($ResolvedFile) -or -not (Test-Path $ResolvedFile)) {
+        return $null
+    }
+
+    $resolvedRows = @(Import-Csv -Path $ResolvedFile)
+    $selectedMap = @{}
+    foreach ($row in $resolvedRows | Where-Object { $_.selected -eq "true" }) {
+        $selectedMap[$row.municipality] = $true
+    }
+
+    return $selectedMap
+}
+
 function Invoke-BuildRealSalesList {
     param(
         [string]$RealDirectory,
+        [string]$ResolvedFilterFile,
         [string]$ScoringFile,
         [string]$AllOutputFile,
         [string]$UsableOutputFile,
@@ -716,14 +736,21 @@ function Invoke-BuildRealSalesList {
         throw "No real-data file pairs were found under: $RealDirectory"
     }
 
+    $selectedMunicipalities = Get-SelectedMunicipalityMap -ResolvedFile $ResolvedFilterFile
     $allMembers = New-Object System.Collections.Generic.List[object]
     $allDetails = New-Object System.Collections.Generic.List[object]
 
     foreach ($pair in $pairs) {
         foreach ($memberRow in @(Import-Csv -Path $pair.MemberPath)) {
+            if ($null -ne $selectedMunicipalities -and -not $selectedMunicipalities.ContainsKey($memberRow.municipality)) {
+                continue
+            }
             $allMembers.Add($memberRow)
         }
         foreach ($detailRow in @(Import-Csv -Path $pair.DetailPath)) {
+            if ($null -ne $selectedMunicipalities -and -not $selectedMunicipalities.ContainsKey($detailRow.municipality)) {
+                continue
+            }
             $allDetails.Add($detailRow)
         }
     }
@@ -772,6 +799,58 @@ function Invoke-BuildRealSalesList {
     Write-CsvBom -Rows $reportRows -Path $ReportOutputFile
 
     Write-LogEntry -Level "info" -Message "build-real-sales-list completed: total=$($allRows.Count) usable=$($usableRows.Count) municipalities=$($reportRows.Count)" -Path $LogFile
+}
+
+function Invoke-RunRealPipeline {
+    param(
+        [string]$AreasFile,
+        [string]$ContractedFile,
+        [string]$ResolvedFile,
+        [string]$RealDirectory,
+        [string]$ScoringFile,
+        [string]$AllOutputFile,
+        [string]$UsableOutputFile,
+        [string]$ReportOutputFile,
+        [int]$MinimumPopulation,
+        [int]$MaximumPopulation,
+        [string]$LogFile
+    )
+
+    Invoke-ResolveAreas -AreasFile $AreasFile -ContractedFile $ContractedFile -OutputFile $ResolvedFile -MinimumPopulation $MinimumPopulation -MaximumPopulation $MaximumPopulation -LogFile $LogFile
+    Invoke-BuildRealSalesList -RealDirectory $RealDirectory -ResolvedFilterFile $ResolvedFile -ScoringFile $ScoringFile -AllOutputFile $AllOutputFile -UsableOutputFile $UsableOutputFile -ReportOutputFile $ReportOutputFile -LogFile $LogFile
+    Write-LogEntry -Level "info" -Message "run-real-pipeline completed" -Path $LogFile
+}
+
+function Invoke-BuildSourceWorkset {
+    param(
+        [string]$ResolvedFile,
+        [string]$RegistryFile,
+        [string]$OutputFile,
+        [string]$LogFile
+    )
+
+    $selectedMunicipalities = Get-SelectedMunicipalityMap -ResolvedFile $ResolvedFile
+    if ($null -eq $selectedMunicipalities -or $selectedMunicipalities.Count -eq 0) {
+        throw "No selected municipalities were found in: $ResolvedFile"
+    }
+
+    $registryRows = @(Import-Csv -Path $RegistryFile)
+    $outputRows = @(
+        foreach ($row in $registryRows) {
+            if ($selectedMunicipalities.ContainsKey($row.municipality)) {
+                [pscustomobject]@{
+                    municipality = $row.municipality
+                    source_org   = $row.source_org
+                    source_type  = $row.source_type
+                    source_url   = $row.source_url
+                    notes        = $row.notes
+                }
+            }
+        }
+    )
+
+    Write-CsvBom -Rows $outputRows -Path $OutputFile
+    Write-LogEntry -Level "info" -Message "build-source-workset completed: sources=$($outputRows.Count)" -Path $LogFile
 }
 
 function Invoke-ReportStatus {
@@ -831,9 +910,12 @@ $companyMasterFile = Resolve-RepoPath -Path $CompanyMasterPath
 $progressFile = Resolve-RepoPath -Path $ProgressReportPath
 $logFile = Resolve-RepoPath -Path $LogPath
 $realDirectory = Resolve-RepoPath -Path $RealDataDirectory
+$realResolvedFile = Resolve-RepoPath -Path $RealResolvedAreasPath
 $realSalesListFile = Resolve-RepoPath -Path $RealSalesListPath
 $realSalesUsableFile = Resolve-RepoPath -Path $RealSalesUsablePath
 $realSalesReportFile = Resolve-RepoPath -Path $RealSalesReportPath
+$sourceRegistryFile = Resolve-RepoPath -Path $SourceRegistryPath
+$sourceWorksetFile = Resolve-RepoPath -Path $SourceWorksetPath
 
 switch ($Command) {
     "resolve-areas" {
@@ -846,6 +928,12 @@ switch ($Command) {
         Invoke-ReportStatus -AreasFile $areasFile -MembersFile $membersFile -ResolvedFile $resolvedFile -CompanyMasterFile $companyMasterFile -LogFile $logFile -OutputFile $progressFile
     }
     "build-real-sales-list" {
-        Invoke-BuildRealSalesList -RealDirectory $realDirectory -ScoringFile $scoringFile -AllOutputFile $realSalesListFile -UsableOutputFile $realSalesUsableFile -ReportOutputFile $realSalesReportFile -LogFile $logFile
+        Invoke-BuildRealSalesList -RealDirectory $realDirectory -ResolvedFilterFile "" -ScoringFile $scoringFile -AllOutputFile $realSalesListFile -UsableOutputFile $realSalesUsableFile -ReportOutputFile $realSalesReportFile -LogFile $logFile
+    }
+    "run-real-pipeline" {
+        Invoke-RunRealPipeline -AreasFile $areasFile -ContractedFile $contractedFile -ResolvedFile $realResolvedFile -RealDirectory $realDirectory -ScoringFile $scoringFile -AllOutputFile $realSalesListFile -UsableOutputFile $realSalesUsableFile -ReportOutputFile $realSalesReportFile -MinimumPopulation $MinPopulation -MaximumPopulation $MaxPopulation -LogFile $logFile
+    }
+    "build-source-workset" {
+        Invoke-BuildSourceWorkset -ResolvedFile $realResolvedFile -RegistryFile $sourceRegistryFile -OutputFile $sourceWorksetFile -LogFile $logFile
     }
 }
