@@ -1,6 +1,6 @@
 ﻿param(
     [Parameter(Mandatory = $true, Position = 0)]
-    [ValidateSet("resolve-areas", "build-company-master", "report-status", "build-real-sales-list", "run-real-pipeline", "build-source-workset", "extract-member-candidates")]
+    [ValidateSet("resolve-areas", "build-company-master", "report-status", "build-real-sales-list", "run-real-pipeline", "build-source-workset", "extract-member-candidates", "normalize-member-candidates")]
     [string]$Command,
 
     [int]$MinPopulation = 100000,
@@ -21,7 +21,8 @@
     [string]$RealSalesReportPath = "data/out/real_sales_list_report.csv",
     [string]$SourceRegistryPath = "config/source_registry.csv",
     [string]$SourceWorksetPath = "data/out/source_workset.csv",
-    [string]$ExtractedMemberCandidatesPath = "data/out/extracted_member_candidates.csv"
+    [string]$ExtractedMemberCandidatesPath = "data/out/extracted_member_candidates.csv",
+    [string]$NormalizedMemberCompaniesPath = "data/out/normalized_member_companies.csv"
 )
 
 Set-StrictMode -Version Latest
@@ -1071,6 +1072,142 @@ function Invoke-ExtractMemberCandidates {
     Write-LogEntry -Level "info" -Message "extract-member-candidates completed: candidates=$($outputRows.Count)" -Path $LogFile
 }
 
+function Get-NormalizedMemberCompanyName {
+    param(
+        [string]$CompanyName,
+        [string]$TitleSnapshot,
+        [string]$CandidateUrl,
+        [string]$Municipality
+    )
+
+    $value = [string]$CompanyName
+    $patterns = @(
+        '(株式会社[^|\-|｜]+)',
+        '(有限会社[^|\-|｜]+)',
+        '(合資会社[^|\-|｜]+)',
+        '(合名会社[^|\-|｜]+)',
+        '(合同会社[^|\-|｜]+)',
+        '(司法書士法人[^|\-|｜]+)',
+        '(医療法人[^|\-|｜]+)',
+        '(学校法人[^|\-|｜]+)'
+    )
+
+    foreach ($pattern in $patterns) {
+        $match = [regex]::Match($value, $pattern)
+        if ($match.Success) {
+            $value = $match.Groups[1].Value
+            break
+        }
+    }
+
+    $value = ($value -replace '【[^】]+】', '').Trim()
+    $value = ($value -replace '^(愛知県岡崎市の|岡崎市の|愛知県岡崎の|岡崎の|高山市の|津山市の)', '').Trim()
+    $value = ($value -replace '^(お墓・墓・墓石専門店)$', '').Trim()
+    $value = ($value -replace '^(岡崎 印刷会社)$', '').Trim()
+    $value = ($value -replace '^(岡崎市)$', '').Trim()
+    $value = ($value -replace '^(株式会社 公式サイト)$', '').Trim()
+    $value = ($value -replace '^(転送)$', '').Trim()
+    $value = ($value -replace '^(みなさまの健康で豊かな食生活を豆を通じて応援する「ニチレト」)$', 'ニチレト').Trim()
+    $value = ($value -replace '^しゃぶしゃぶ ステーキ桂$', 'しゃぶしゃぶ ステーキ桂').Trim()
+    $value = ($value -replace '^ティ・ケイスピリッツ有限会社.*$', 'ティ・ケイスピリッツ有限会社').Trim()
+    $value = ($value -replace '^岡崎 和菓子・スイーツなら旭軒元直$', '旭軒元直').Trim()
+    $value = ($value -replace '^磯貝彫刻$', '有限会社磯貝彫刻').Trim()
+    $value = ($value -replace '^新車・軽自動車リース専門店（株）江山自動車$', '株式会社江山自動車').Trim()
+    $value = ($value -replace '^注文住宅 アーツ・ラボ$', 'アーツ・ラボ').Trim()
+
+    if ([string]::IsNullOrWhiteSpace($value) -and -not [string]::IsNullOrWhiteSpace($TitleSnapshot)) {
+        foreach ($pattern in $patterns) {
+            $match = [regex]::Match([string]$TitleSnapshot, $pattern)
+            if ($match.Success) {
+                $value = $match.Groups[1].Value
+                break
+            }
+        }
+    }
+
+    if ([string]::IsNullOrWhiteSpace($value)) {
+        return ""
+    }
+
+    return ($value -replace '\s+', ' ').Trim()
+}
+
+function Test-NormalizedMemberCandidate {
+    param(
+        [string]$NormalizedName,
+        [string]$TitleSnapshot,
+        [string]$CandidateUrl,
+        [string]$Municipality
+    )
+
+    if ([string]::IsNullOrWhiteSpace($NormalizedName)) {
+        return $false
+    }
+
+    if ($NormalizedName -eq $Municipality) {
+        return $false
+    }
+
+    if ($NormalizedName.Length -lt 2) {
+        return $false
+    }
+
+    foreach ($blocked in @(
+            '国際ロータリー',
+            'ロータリー第',
+            '掃除代行',
+            '賃貸・売買',
+            'お墓・墓・墓石専門店',
+            '岡崎 印刷会社',
+            '転送',
+            '公式サイト'
+        )) {
+        if ($NormalizedName -like "*$blocked*") {
+            return $false
+        }
+    }
+
+    return $true
+}
+
+function Invoke-NormalizeMemberCandidates {
+    param(
+        [string]$CandidatesFile,
+        [string]$OutputFile,
+        [string]$LogFile
+    )
+
+    $candidateRows = @(Import-Csv -Path $CandidatesFile)
+    $normalizedRows = New-Object System.Collections.Generic.List[object]
+    $seen = @{}
+
+    foreach ($row in $candidateRows) {
+        $normalizedName = Get-NormalizedMemberCompanyName -CompanyName $row.company_name -TitleSnapshot $row.title_snapshot -CandidateUrl $row.website_candidate_url -Municipality $row.municipality
+        if (-not (Test-NormalizedMemberCandidate -NormalizedName $normalizedName -TitleSnapshot $row.title_snapshot -CandidateUrl $row.website_candidate_url -Municipality $row.municipality)) {
+            continue
+        }
+
+        $dedupeKey = "{0}|{1}" -f $row.municipality, $normalizedName
+        if ($seen.ContainsKey($dedupeKey)) {
+            continue
+        }
+        $seen[$dedupeKey] = $true
+
+        $normalizedRows.Add([pscustomobject]@{
+            company_name          = $normalizedName
+            municipality          = $row.municipality
+            source_org            = $row.source_org
+            source_url            = $row.source_url
+            website_candidate_url = $row.website_candidate_url
+            title_snapshot        = $row.title_snapshot
+        })
+    }
+
+    $outputRows = @($normalizedRows | Sort-Object municipality, source_org, company_name)
+    Write-CsvBom -Rows $outputRows -Path $OutputFile
+    Write-LogEntry -Level "info" -Message "normalize-member-candidates completed: companies=$($outputRows.Count)" -Path $LogFile
+}
+
 function Invoke-ReportStatus {
     param(
         [string]$AreasFile,
@@ -1135,6 +1272,7 @@ $realSalesReportFile = Resolve-RepoPath -Path $RealSalesReportPath
 $sourceRegistryFile = Resolve-RepoPath -Path $SourceRegistryPath
 $sourceWorksetFile = Resolve-RepoPath -Path $SourceWorksetPath
 $extractedMemberCandidatesFile = Resolve-RepoPath -Path $ExtractedMemberCandidatesPath
+$normalizedMemberCompaniesFile = Resolve-RepoPath -Path $NormalizedMemberCompaniesPath
 
 switch ($Command) {
     "resolve-areas" {
@@ -1157,5 +1295,8 @@ switch ($Command) {
     }
     "extract-member-candidates" {
         Invoke-ExtractMemberCandidates -WorksetFile $sourceWorksetFile -OutputFile $extractedMemberCandidatesFile -LogFile $logFile
+    }
+    "normalize-member-candidates" {
+        Invoke-NormalizeMemberCandidates -CandidatesFile $extractedMemberCandidatesFile -OutputFile $normalizedMemberCompaniesFile -LogFile $logFile
     }
 }
