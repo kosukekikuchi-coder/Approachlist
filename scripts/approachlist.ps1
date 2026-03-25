@@ -1,6 +1,6 @@
 ﻿param(
     [Parameter(Mandatory = $true, Position = 0)]
-    [ValidateSet("resolve-areas", "build-company-master", "report-status", "build-real-sales-list", "run-real-pipeline", "build-source-workset", "extract-member-candidates", "normalize-member-candidates")]
+    [ValidateSet("resolve-areas", "build-company-master", "report-status", "build-real-sales-list", "run-real-pipeline", "build-source-workset", "extract-member-candidates", "normalize-member-candidates", "extract-company-details")]
     [string]$Command,
 
     [int]$MinPopulation = 100000,
@@ -22,7 +22,8 @@
     [string]$SourceRegistryPath = "config/source_registry.csv",
     [string]$SourceWorksetPath = "data/out/source_workset.csv",
     [string]$ExtractedMemberCandidatesPath = "data/out/extracted_member_candidates.csv",
-    [string]$NormalizedMemberCompaniesPath = "data/out/normalized_member_companies.csv"
+    [string]$NormalizedMemberCompaniesPath = "data/out/normalized_member_companies.csv",
+    [string]$ExtractedCompanyDetailsPath = "data/out/extracted_company_details.csv"
 )
 
 Set-StrictMode -Version Latest
@@ -982,6 +983,126 @@ function Get-WebPageTitle {
     return ""
 }
 
+function Get-DecodedWebPage {
+    param(
+        [string]$Url,
+        [string]$LogFile
+    )
+
+    try {
+        $response = Invoke-WebRequest -Uri $Url -UseBasicParsing -TimeoutSec 20
+        $byteStream = New-Object System.IO.MemoryStream
+        $response.RawContentStream.Position = 0
+        $response.RawContentStream.CopyTo($byteStream)
+        $bytes = $byteStream.ToArray()
+
+        $charset = ""
+        $contentType = [string]$response.Headers["Content-Type"]
+        if ($contentType -match 'charset=([A-Za-z0-9\-_]+)') {
+            $charset = $matches[1]
+        }
+
+        $asciiPreview = [System.Text.Encoding]::ASCII.GetString($bytes)
+        if ([string]::IsNullOrWhiteSpace($charset) -and $asciiPreview -match 'charset=["'']?([A-Za-z0-9\-_]+)') {
+            $charset = $matches[1]
+        }
+
+        if ([string]::IsNullOrWhiteSpace($charset)) {
+            $charset = "utf-8"
+        }
+
+        $encodingName = switch -Regex ($charset.ToLowerInvariant()) {
+            '^(shift_jis|shift-jis|sjis|x-sjis)$' { "shift_jis"; break }
+            '^(euc-jp)$' { "euc-jp"; break }
+            default { $charset }
+        }
+
+        $encoding = [System.Text.Encoding]::GetEncoding($encodingName)
+        $html = $encoding.GetString($bytes)
+        $text = $html -replace '(?is)<script.*?</script>', ' '
+        $text = $text -replace '(?is)<style.*?</style>', ' '
+        $text = $text -replace '(?is)<[^>]+>', ' '
+        $text = [System.Net.WebUtility]::HtmlDecode($text)
+        $text = ($text -replace '\s+', ' ').Trim()
+
+        return [pscustomobject]@{
+            Response = $response
+            Html     = $html
+            Text     = $text
+        }
+    }
+    catch {
+        Write-LogEntry -Level "warning" -Message "Failed to fetch detail page: $Url" -Path $LogFile
+        return $null
+    }
+}
+
+function Find-PhoneNumber {
+    param([string]$Text)
+
+    $match = [regex]::Match($Text, '(0\d{1,4}-\d{1,4}-\d{3,4})')
+    if ($match.Success) {
+        return $match.Groups[1].Value
+    }
+
+    return ""
+}
+
+function Find-PostalAddress {
+    param([string]$Text)
+
+    $match = [regex]::Match($Text, '(〒\d{3}-\d{4}\s*[^0-9]{0,4}.{5,80}?)((TEL|電話|FAX|営業時間|Copyright|©)|$)')
+    if ($match.Success) {
+        $value = ($match.Groups[1].Value -replace '\s+', ' ').Trim()
+        $value = ($value -replace '(Tel|TEL|電話).*$','').Trim()
+        return $value
+    }
+
+    return ""
+}
+
+function Find-ContactFormUrl {
+    param(
+        [string]$BaseUrl,
+        [object]$Response
+    )
+
+    foreach ($link in @($Response.Links)) {
+        $hrefProperty = $link.PSObject.Properties["href"]
+        if ($null -eq $hrefProperty) {
+            continue
+        }
+
+        $candidateUrl = Resolve-AbsoluteUrl -BaseUrl $BaseUrl -Href ([string]$hrefProperty.Value)
+        if ([string]::IsNullOrWhiteSpace($candidateUrl)) {
+            continue
+        }
+
+        $sameHost = $false
+        try {
+            $sameHost = ([System.Uri]$candidateUrl).Host -eq ([System.Uri]$BaseUrl).Host
+        }
+        catch {
+            $sameHost = $false
+        }
+
+        $innerText = ""
+        $textProperty = $link.PSObject.Properties["innerText"]
+        if ($null -ne $textProperty) {
+            $innerText = [string]$textProperty.Value
+        }
+
+        if ($sameHost -and (
+                $candidateUrl -match '(contact|inquiry|contact-form|toiawase)' -or
+                $innerText -match '(問い合わせ|お問合せ|お問い合わせ|CONTACT|Contact)'
+            )) {
+            return $candidateUrl
+        }
+    }
+
+    return ""
+}
+
 function Convert-TitleToCompanyName {
     param(
         [string]$Title,
@@ -1208,6 +1329,58 @@ function Invoke-NormalizeMemberCandidates {
     Write-LogEntry -Level "info" -Message "normalize-member-candidates completed: companies=$($outputRows.Count)" -Path $LogFile
 }
 
+function Invoke-ExtractCompanyDetails {
+    param(
+        [string]$MembersFile,
+        [string]$OutputFile,
+        [string]$LogFile
+    )
+
+    $memberRows = @(Import-Csv -Path $MembersFile)
+    $detailRows = New-Object System.Collections.Generic.List[object]
+
+    foreach ($row in $memberRows) {
+        $website = [string]$row.website_candidate_url
+        if ([string]::IsNullOrWhiteSpace($website)) {
+            continue
+        }
+
+        $page = Get-DecodedWebPage -Url $website -LogFile $LogFile
+        $address = ""
+        $phone = ""
+        $contactFormUrl = ""
+
+        if ($null -ne $page) {
+            $address = Find-PostalAddress -Text $page.Text
+            $phone = Find-PhoneNumber -Text $page.Text
+            $contactFormUrl = Find-ContactFormUrl -BaseUrl $website -Response $page.Response
+        }
+
+        $contactability = 0
+        if (-not [string]::IsNullOrWhiteSpace($phone) -or -not [string]::IsNullOrWhiteSpace($website) -or -not [string]::IsNullOrWhiteSpace($contactFormUrl)) {
+            $contactability = 1
+        }
+
+        $detailRows.Add([pscustomobject]@{
+            company_name      = $row.company_name
+            municipality      = $row.municipality
+            address           = $address
+            phone             = $phone
+            website           = $website
+            contact_form_url  = $contactFormUrl
+            detail_source_url = $website
+            industry_fit      = 0
+            local_focus       = 1
+            network_affinity  = 1
+            contactability    = $contactability
+        })
+    }
+
+    $outputRows = @($detailRows | Sort-Object municipality, company_name)
+    Write-CsvBom -Rows $outputRows -Path $OutputFile
+    Write-LogEntry -Level "info" -Message "extract-company-details completed: rows=$($outputRows.Count)" -Path $LogFile
+}
+
 function Invoke-ReportStatus {
     param(
         [string]$AreasFile,
@@ -1273,6 +1446,7 @@ $sourceRegistryFile = Resolve-RepoPath -Path $SourceRegistryPath
 $sourceWorksetFile = Resolve-RepoPath -Path $SourceWorksetPath
 $extractedMemberCandidatesFile = Resolve-RepoPath -Path $ExtractedMemberCandidatesPath
 $normalizedMemberCompaniesFile = Resolve-RepoPath -Path $NormalizedMemberCompaniesPath
+$extractedCompanyDetailsFile = Resolve-RepoPath -Path $ExtractedCompanyDetailsPath
 
 switch ($Command) {
     "resolve-areas" {
@@ -1298,5 +1472,8 @@ switch ($Command) {
     }
     "normalize-member-candidates" {
         Invoke-NormalizeMemberCandidates -CandidatesFile $extractedMemberCandidatesFile -OutputFile $normalizedMemberCompaniesFile -LogFile $logFile
+    }
+    "extract-company-details" {
+        Invoke-ExtractCompanyDetails -MembersFile $normalizedMemberCompaniesFile -OutputFile $extractedCompanyDetailsFile -LogFile $logFile
     }
 }

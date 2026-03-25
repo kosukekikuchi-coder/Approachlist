@@ -11,6 +11,11 @@ powershell -ExecutionPolicy Bypass -File .\scripts\approachlist.ps1 resolve-area
 powershell -ExecutionPolicy Bypass -File .\scripts\approachlist.ps1 build-company-master
 powershell -ExecutionPolicy Bypass -File .\scripts\approachlist.ps1 report-status
 powershell -ExecutionPolicy Bypass -File .\scripts\approachlist.ps1 build-real-sales-list
+powershell -ExecutionPolicy Bypass -File .\scripts\approachlist.ps1 build-source-workset
+powershell -ExecutionPolicy Bypass -File .\scripts\approachlist.ps1 extract-member-candidates
+powershell -ExecutionPolicy Bypass -File .\scripts\approachlist.ps1 normalize-member-candidates
+powershell -ExecutionPolicy Bypass -File .\scripts\approachlist.ps1 extract-company-details
+powershell -ExecutionPolicy Bypass -File .\scripts\approachlist.ps1 run-real-pipeline
 ```
 
 ## Files
@@ -26,6 +31,10 @@ powershell -ExecutionPolicy Bypass -File .\scripts\approachlist.ps1 build-real-s
 - `data/out/real_sales_list.csv`
 - `data/out/real_sales_list_usable.csv`
 - `data/out/real_sales_list_report.csv`
+- `data/out/source_workset.csv`
+- `data/out/extracted_member_candidates.csv`
+- `data/out/normalized_member_companies.csv`
+- `data/out/extracted_company_details.csv`
 - `logs/run.log`
 
 ## Notes
@@ -39,3 +48,8 @@ powershell -ExecutionPolicy Bypass -File .\scripts\approachlist.ps1 build-real-s
   - `real_sales_list.csv`: all rows
   - `real_sales_list_usable.csv`: only `is_usable=true`, reordered for sales use
   - `real_sales_list_report.csv`: municipality-level counts
+- `build-source-workset` uses `source_registry.csv` and the selected municipalities to emit the source URLs that should be crawled next.
+- `extract-member-candidates` is a live-fetch prototype that inspects selected source pages and derives company-name candidates from linked websites.
+- `normalize-member-candidates` trims noisy titles down toward `member_companies.csv`-style rows for the next detail step.
+- `extract-company-details` is a live-fetch prototype that inspects `website_candidate_url` and derives `address`, `phone`, `contact_form_url`, and `detail_source_url`.
+- `run-real-pipeline` currently covers the region-selection side and usable-list generation side. The source crawling side is being added as separate prototype commands.
