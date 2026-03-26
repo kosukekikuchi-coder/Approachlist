@@ -1053,6 +1053,21 @@ function Get-SourceOrgCandidate {
         return ""
     }
 
+    foreach ($pattern in @(
+            '(一般社団法人[^|｜\-–—»＞]+青年会議所)',
+            '([^|｜\-–—»＞]+商工会議所青年部)',
+            '([^|｜\-–—»＞]+青年会議所)',
+            '([^|｜\-–—»＞]+商工会議所)',
+            '([^|｜\-–—»＞]+ロータリークラブ)',
+            '([^|｜\-–—»＞]+物産協会)',
+            '([^|｜\-–—»＞]+観光コンベンション協会)'
+        )) {
+        $match = [regex]::Match($Title, $pattern)
+        if ($match.Success) {
+            return ($match.Groups[1].Value -replace '\s+', ' ').Trim()
+        }
+    }
+
     $value = $Title
     foreach ($separator in @('|', '｜', ' - ', ' – ', ' — ')) {
         if ($value.Contains($separator)) {
@@ -1063,6 +1078,29 @@ function Get-SourceOrgCandidate {
 
     $value = ($value -replace '\s+', ' ').Trim()
     return $value
+}
+
+function Get-SourceRegistrationPriority {
+    param([pscustomobject]$Candidate)
+
+    $priority = 0
+    $url = [string]$Candidate.source_url
+    $name = [string]$Candidate.source_org_candidate
+
+    if ($url -match '/members?/|/members?$|/member$|/member/|page_id=\d+') {
+        $priority += 4
+    }
+    if ($url -match 'page_id=17|page_id=2219|page_id=2882') {
+        $priority += 1
+    }
+    if ($name -match '会員一覧|会員紹介|役員表') {
+        $priority -= 2
+    }
+    if ($name -match 'ロータリークラブ|商工会議所|青年会議所|商工会議所青年部') {
+        $priority += 2
+    }
+
+    return $priority
 }
 
 function Get-SourceCandidateScore {
@@ -1268,7 +1306,7 @@ function Invoke-RegisterSourceCandidates {
 
     $rowsToAdd = New-Object System.Collections.Generic.List[object]
     $selectedHosts = @{}
-    foreach ($candidate in @($candidateRows | Sort-Object -Property @{ Expression = { [int]$_.score }; Descending = $true }, source_url)) {
+    foreach ($candidate in @($candidateRows | Sort-Object -Property @{ Expression = { [int]$_.score }; Descending = $true }, @{ Expression = { Get-SourceRegistrationPriority -Candidate $_ }; Descending = $true }, source_url)) {
         if ($rowsToAdd.Count -ge $TopCount) {
             break
         }
