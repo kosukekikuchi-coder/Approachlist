@@ -1256,11 +1256,18 @@ function Invoke-RegisterSourceCandidates {
     }
 
     $existingUrls = @{}
+    $existingHosts = @{}
     foreach ($row in $existingRows) {
         $existingUrls[$row.source_url] = $true
+        try {
+            $existingHosts[([System.Uri]$row.source_url).Host.ToLowerInvariant()] = $true
+        }
+        catch {
+        }
     }
 
     $rowsToAdd = New-Object System.Collections.Generic.List[object]
+    $selectedHosts = @{}
     foreach ($candidate in @($candidateRows | Sort-Object -Property @{ Expression = { [int]$_.score }; Descending = $true }, source_url)) {
         if ($rowsToAdd.Count -ge $TopCount) {
             break
@@ -1270,7 +1277,24 @@ function Invoke-RegisterSourceCandidates {
             continue
         }
 
+        $sourceHostName = ""
+        try {
+            $sourceHostName = ([System.Uri]$candidate.source_url).Host.ToLowerInvariant()
+        }
+        catch {
+            $sourceHostName = ""
+        }
+
+        if (-not [string]::IsNullOrWhiteSpace($sourceHostName)) {
+            if ($existingHosts.ContainsKey($sourceHostName) -or $selectedHosts.ContainsKey($sourceHostName)) {
+                continue
+            }
+        }
+
         $existingUrls[$candidate.source_url] = $true
+        if (-not [string]::IsNullOrWhiteSpace($sourceHostName)) {
+            $selectedHosts[$sourceHostName] = $true
+        }
         $rowsToAdd.Add([pscustomobject]@{
             municipality = $candidate.municipality
             source_org   = $candidate.source_org_candidate
