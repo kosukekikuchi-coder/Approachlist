@@ -1420,6 +1420,12 @@ function Test-IgnoredCandidateUrl {
         }
     }
 
+    foreach ($pattern in @('/wp-login', '/login')) {
+        if ($CandidateUrl -match [regex]::Escape($pattern)) {
+            return $true
+        }
+    }
+
     $sourceHost = ([System.Uri]$SourceUrl).Host.ToLowerInvariant()
     $candidateHost = ([System.Uri]$CandidateUrl).Host.ToLowerInvariant()
     $sameHost = $sourceHost -eq $candidateHost
@@ -1783,7 +1789,8 @@ function Test-GenericPromotionalName {
             '^帯広の賃貸や.*$',
             '^帯広の美容室なら.*$',
             '^北海道帯広市の就労継続支援B型事業所なら.*$',
-            '^十勝・帯広 .*',
+            '^十勝・帯広.*',
+            '^帯広・十勝.*',
             '^(北海道|十勝|帯広|岡崎|津山|高山|成田|長浜)(の|で|なら).+',
             '.*公式ホームページ$',
             '.*ホームページ$'
@@ -1810,7 +1817,10 @@ function Get-TitleDisplayNameCandidate {
 
     $bracketMatch = [regex]::Match($firstSegment, '【([^】]{2,40})】')
     if ($bracketMatch.Success) {
-        return ($bracketMatch.Groups[1].Value -replace '\s+', ' ').Trim()
+        $value = ($bracketMatch.Groups[1].Value -replace '\s+', ' ').Trim()
+        if ($value -notmatch '^(公式|ホーム|TOP|トップ)$') {
+            return $value
+        }
     }
 
     $quoteMatch = [regex]::Match($firstSegment, '[「『]([^」』]{2,40})[」』]')
@@ -1821,6 +1831,21 @@ function Get-TitleDisplayNameCandidate {
     $narraMatch = [regex]::Match($firstSegment, 'なら([A-Za-z0-9Ａ-Ｚａ-ｚぁ-んァ-ヶ一-龠・ー\s]{2,40})$')
     if ($narraMatch.Success) {
         return ($narraMatch.Groups[1].Value -replace '\s+', ' ').Trim()
+    }
+
+    foreach ($segment in @([string]$TitleSnapshot -split '[|｜]')) {
+        $candidateSegment = ($segment -replace '\s+', ' ').Trim()
+        if ([string]::IsNullOrWhiteSpace($candidateSegment)) {
+            continue
+        }
+
+        $candidateSegment = ($candidateSegment -replace '^【公式】', '').Trim()
+        if ($candidateSegment.Length -ge 2 -and $candidateSegment.Length -le 30 -and
+            $candidateSegment -notmatch '^(公式|ホーム|TOP|トップ|Home)$' -and
+            -not (Test-GenericPromotionalName -Value $candidateSegment) -and
+            $candidateSegment -notmatch 'ホームページ|トップページ|お問い合わせ|会社概要|事業案内|サービス|採用|RECRUIT|CONTACT') {
+            return $candidateSegment
+        }
     }
 
     return ""
@@ -2053,6 +2078,10 @@ function Test-NormalizedMemberCandidate {
         return $false
     }
 
+    if ($NormalizedName -match '[�]{2,}') {
+        return $false
+    }
+
     if (Test-CorporateOnlyName -Value $NormalizedName) {
         return $false
     }
@@ -2072,6 +2101,8 @@ function Test-NormalizedMemberCandidate {
             'お墓・墓・墓石専門店',
             '岡崎 印刷会社',
             '転送',
+            'ログイン',
+            '公式',
             '公式サイト',
             'Home',
             '会社概要'
