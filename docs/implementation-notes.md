@@ -17,6 +17,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\approachlist.ps1 normalize-me
 powershell -ExecutionPolicy Bypass -File .\scripts\approachlist.ps1 extract-company-details
 powershell -ExecutionPolicy Bypass -File .\scripts\approachlist.ps1 run-real-pipeline
 powershell -ExecutionPolicy Bypass -File .\scripts\approachlist.ps1 run-web-pipeline
+powershell -ExecutionPolicy Bypass -File .\scripts\approachlist.ps1 discover-source-candidates -MunicipalityName 帯広市
 ```
 
 ## Files
@@ -39,6 +40,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\approachlist.ps1 run-web-pipe
 - `data/out/web_sales_list.csv`
 - `data/out/web_sales_list_usable.csv`
 - `data/out/web_sales_list_report.csv`
+- `data/out/source_candidates.csv`
 - `logs/run.log`
 
 ## Notes
@@ -58,3 +60,4 @@ powershell -ExecutionPolicy Bypass -File .\scripts\approachlist.ps1 run-web-pipe
 - `extract-company-details` is a live-fetch prototype that inspects `website_candidate_url` and derives `address`, `phone`, `contact_form_url`, and `detail_source_url`.
 - `run-real-pipeline` currently covers the region-selection side and usable-list generation side. The source crawling side is being added as separate prototype commands.
 - `run-web-pipeline` chains `build-source-workset` -> `extract-member-candidates` -> `normalize-member-candidates` -> `extract-company-details` -> `build-company-master` -> usable-list/report export for a small live-crawl prototype.
+- `discover-source-candidates` is a source-discovery prototype that queries Bing RSS for chamber / YEG / JC / rotary candidates and writes a registry-ready CSV.

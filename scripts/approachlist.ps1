@@ -1,6 +1,6 @@
 ﻿param(
     [Parameter(Mandatory = $true, Position = 0)]
-    [ValidateSet("resolve-areas", "build-company-master", "report-status", "build-real-sales-list", "run-real-pipeline", "build-source-workset", "extract-member-candidates", "normalize-member-candidates", "extract-company-details", "run-web-pipeline")]
+    [ValidateSet("resolve-areas", "build-company-master", "report-status", "build-real-sales-list", "run-real-pipeline", "build-source-workset", "extract-member-candidates", "normalize-member-candidates", "extract-company-details", "run-web-pipeline", "discover-source-candidates")]
     [string]$Command,
 
     [int]$MinPopulation = 100000,
@@ -26,7 +26,9 @@
     [string]$ExtractedCompanyDetailsPath = "data/out/extracted_company_details.csv",
     [string]$WebSalesListPath = "data/out/web_sales_list.csv",
     [string]$WebSalesUsablePath = "data/out/web_sales_list_usable.csv",
-    [string]$WebSalesReportPath = "data/out/web_sales_list_report.csv"
+    [string]$WebSalesReportPath = "data/out/web_sales_list_report.csv",
+    [string]$MunicipalityName = "",
+    [string]$SourceDiscoveryPath = "data/out/source_candidates.csv"
 )
 
 Set-StrictMode -Version Latest
@@ -1021,6 +1023,194 @@ function Resolve-AbsoluteUrl {
     }
 }
 
+function Get-SourceTypeCandidate {
+    param(
+        [string]$Title,
+        [string]$Url
+    )
+
+    $combined = ("{0} {1}" -f $Title, $Url)
+    if ($combined -match 'ロータリー|rotary') {
+        return "rotary_member_voice"
+    }
+    if ($combined -match '商工会議所青年部|yeg') {
+        return "chamber_member_directory"
+    }
+    if ($combined -match '青年会議所|jc') {
+        return "jc_member_list"
+    }
+    if ($combined -match '商工会議所') {
+        return "chamber_member_directory"
+    }
+    return "association_member_list"
+}
+
+function Get-SourceOrgCandidate {
+    param([string]$Title)
+
+    if ([string]::IsNullOrWhiteSpace($Title)) {
+        return ""
+    }
+
+    $value = $Title
+    foreach ($separator in @('|', '｜', ' - ', ' – ', ' — ')) {
+        if ($value.Contains($separator)) {
+            $value = $value.Split($separator)[0]
+            break
+        }
+    }
+
+    $value = ($value -replace '\s+', ' ').Trim()
+    return $value
+}
+
+function Get-SourceCandidateScore {
+    param(
+        [string]$Municipality,
+        [string]$Title,
+        [string]$Url,
+        [string]$Snippet
+    )
+
+    $combined = ("{0} {1} {2}" -f $Title, $Url, $Snippet)
+    $score = 0
+    $reasons = New-Object System.Collections.Generic.List[string]
+
+    if ($combined -match [regex]::Escape($Municipality)) {
+        $score += 5
+        $reasons.Add("municipality match")
+    }
+    if ($combined -match '商工会議所青年部|yeg') {
+        $score += 5
+        $reasons.Add("yeg/chamber youth")
+    }
+    elseif ($combined -match '商工会議所') {
+        $score += 4
+        $reasons.Add("chamber")
+    }
+    if ($combined -match '青年会議所|jc') {
+        $score += 4
+        $reasons.Add("jc")
+    }
+    if ($combined -match 'ロータリー|rotary') {
+        $score += 4
+        $reasons.Add("rotary")
+    }
+    if ($combined -match '会員|member|members|名簿|紹介|voice|profile|メンバー') {
+        $score += 4
+        $reasons.Add("member page signal")
+    }
+
+    return [pscustomobject]@{
+        Score  = $score
+        Reason = ($reasons -join ", ")
+    }
+}
+
+function Resolve-SearchResultUrl {
+    param([string]$Href)
+
+    if ([string]::IsNullOrWhiteSpace($Href)) {
+        return ""
+    }
+
+    $value = $Href
+    if ($value.StartsWith("//")) {
+        $value = "https:$value"
+    }
+
+    if ($value -match 'uddg=([^&]+)') {
+        return [System.Uri]::UnescapeDataString($matches[1])
+    }
+
+    if ($value.StartsWith("http://") -or $value.StartsWith("https://")) {
+        return $value
+    }
+
+    return ""
+}
+
+function Invoke-DiscoverSourceCandidates {
+    param(
+        [string]$Municipality,
+        [string]$OutputFile,
+        [string]$LogFile
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Municipality)) {
+        throw "MunicipalityName is required for discover-source-candidates."
+    }
+
+    $queries = @(
+        "$Municipality 商工会議所 会員",
+        "$Municipality 商工会議所青年部 会員",
+        "$Municipality 青年会議所 会員",
+        "$Municipality ロータリークラブ 会員"
+    )
+
+    $candidateRows = New-Object System.Collections.Generic.List[object]
+    $seen = @{}
+
+    foreach ($query in $queries) {
+        $searchUrl = "https://html.duckduckgo.com/html/?q={0}" -f [System.Uri]::EscapeDataString($query)
+        try {
+            $response = Invoke-WebRequest -Uri $searchUrl -UseBasicParsing -TimeoutSec 20
+        }
+        catch {
+            Write-LogEntry -Level "warning" -Message "Failed to discover sources for query: $query" -Path $LogFile
+            continue
+        }
+
+        foreach ($link in @($response.Links)) {
+            $hrefProperty = $link.PSObject.Properties["href"]
+            if ($null -eq $hrefProperty) {
+                continue
+            }
+
+            $url = Resolve-SearchResultUrl -Href ([string]$hrefProperty.Value)
+            if ([string]::IsNullOrWhiteSpace($url)) {
+                continue
+            }
+
+            if ($url -match 'facebook|instagram|wikipedia|tripadvisor|jalan|rakuten|newt\.net|hankyu-travel|asahi\.co\.jp') {
+                continue
+            }
+
+            $title = Get-WebPageTitle -Url $url -LogFile $LogFile
+            $innerText = ""
+            $innerTextProperty = $link.PSObject.Properties["innerText"]
+            if ($null -ne $innerTextProperty) {
+                $innerText = [string]$innerTextProperty.Value
+            }
+            $snippet = $innerText
+
+            $scoreResult = Get-SourceCandidateScore -Municipality $Municipality -Title $title -Url $url -Snippet $snippet
+            if ($scoreResult.Score -lt 8) {
+                continue
+            }
+
+            if ($seen.ContainsKey($url)) {
+                continue
+            }
+            $seen[$url] = $true
+
+            $candidateRows.Add([pscustomobject]@{
+                municipality          = $Municipality
+                source_org_candidate  = Get-SourceOrgCandidate -Title $title
+                source_type_candidate = Get-SourceTypeCandidate -Title $title -Url $url
+                source_url            = $url
+                search_query          = $query
+                score                 = $scoreResult.Score
+                reason                = $scoreResult.Reason
+            })
+        }
+    }
+
+    $outputRows = @($candidateRows | Sort-Object -Property @{ Expression = { [int]$_.score }; Descending = $true }, source_org_candidate, source_url)
+    Write-CsvBom -Rows $outputRows -Path $OutputFile
+    Write-LogEntry -Level "info" -Message "discover-source-candidates completed: municipality=$Municipality candidates=$($outputRows.Count)" -Path $LogFile
+}
+
 function Test-IgnoredCandidateUrl {
     param(
         [string]$SourceUrl,
@@ -1770,6 +1960,7 @@ $extractedCompanyDetailsFile = Resolve-RepoPath -Path $ExtractedCompanyDetailsPa
 $webSalesListFile = Resolve-RepoPath -Path $WebSalesListPath
 $webSalesUsableFile = Resolve-RepoPath -Path $WebSalesUsablePath
 $webSalesReportFile = Resolve-RepoPath -Path $WebSalesReportPath
+$sourceDiscoveryFile = Resolve-RepoPath -Path $SourceDiscoveryPath
 
 switch ($Command) {
     "resolve-areas" {
@@ -1801,5 +1992,8 @@ switch ($Command) {
     }
     "run-web-pipeline" {
         Invoke-RunWebPipeline -ResolvedFile $realResolvedFile -RegistryFile $sourceRegistryFile -WorksetFile $sourceWorksetFile -CandidatesFile $extractedMemberCandidatesFile -NormalizedMembersFile $normalizedMemberCompaniesFile -DetailsFile $extractedCompanyDetailsFile -CompanyMasterFile $companyMasterFile -AllOutputFile $webSalesListFile -UsableOutputFile $webSalesUsableFile -ReportOutputFile $webSalesReportFile -LogFile $logFile
+    }
+    "discover-source-candidates" {
+        Invoke-DiscoverSourceCandidates -Municipality $MunicipalityName -OutputFile $sourceDiscoveryFile -LogFile $logFile
     }
 }
