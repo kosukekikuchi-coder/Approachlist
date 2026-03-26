@@ -18,6 +18,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\approachlist.ps1 extract-comp
 powershell -ExecutionPolicy Bypass -File .\scripts\approachlist.ps1 run-real-pipeline
 powershell -ExecutionPolicy Bypass -File .\scripts\approachlist.ps1 run-web-pipeline
 powershell -ExecutionPolicy Bypass -File .\scripts\approachlist.ps1 discover-source-candidates -MunicipalityName 帯広市
+powershell -ExecutionPolicy Bypass -File .\scripts\approachlist.ps1 register-source-candidates -MunicipalityName 帯広市 -SourceDiscoveryPath data/out/source_candidates_obihiro.csv
 ```
 
 ## Files
@@ -60,4 +61,5 @@ powershell -ExecutionPolicy Bypass -File .\scripts\approachlist.ps1 discover-sou
 - `extract-company-details` is a live-fetch prototype that inspects `website_candidate_url` and derives `address`, `phone`, `contact_form_url`, and `detail_source_url`.
 - `run-real-pipeline` currently covers the region-selection side and usable-list generation side. The source crawling side is being added as separate prototype commands.
 - `run-web-pipeline` chains `build-source-workset` -> `extract-member-candidates` -> `normalize-member-candidates` -> `extract-company-details` -> `build-company-master` -> usable-list/report export for a small live-crawl prototype.
-- `discover-source-candidates` is a source-discovery prototype that queries Bing RSS for chamber / YEG / JC / rotary candidates and writes a registry-ready CSV.
+- `discover-source-candidates` is a source-discovery prototype that queries DuckDuckGo HTML for chamber / YEG / JC / rotary candidates and writes a registry-ready CSV.
+- `register-source-candidates` appends top-scored discovery rows into `source_registry.csv` while skipping duplicate URLs.

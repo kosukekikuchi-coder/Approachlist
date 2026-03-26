@@ -1,6 +1,6 @@
 ﻿param(
     [Parameter(Mandatory = $true, Position = 0)]
-    [ValidateSet("resolve-areas", "build-company-master", "report-status", "build-real-sales-list", "run-real-pipeline", "build-source-workset", "extract-member-candidates", "normalize-member-candidates", "extract-company-details", "run-web-pipeline", "discover-source-candidates")]
+    [ValidateSet("resolve-areas", "build-company-master", "report-status", "build-real-sales-list", "run-real-pipeline", "build-source-workset", "extract-member-candidates", "normalize-member-candidates", "extract-company-details", "run-web-pipeline", "discover-source-candidates", "register-source-candidates")]
     [string]$Command,
 
     [int]$MinPopulation = 100000,
@@ -28,7 +28,8 @@
     [string]$WebSalesUsablePath = "data/out/web_sales_list_usable.csv",
     [string]$WebSalesReportPath = "data/out/web_sales_list_report.csv",
     [string]$MunicipalityName = "",
-    [string]$SourceDiscoveryPath = "data/out/source_candidates.csv"
+    [string]$SourceDiscoveryPath = "data/out/source_candidates.csv",
+    [int]$TopSourceCandidates = 3
 )
 
 Set-StrictMode -Version Latest
@@ -1231,6 +1232,59 @@ function Invoke-DiscoverSourceCandidates {
     Write-LogEntry -Level "info" -Message "discover-source-candidates completed: municipality=$Municipality candidates=$($outputRows.Count)" -Path $LogFile
 }
 
+function Invoke-RegisterSourceCandidates {
+    param(
+        [string]$CandidatesFile,
+        [string]$RegistryFile,
+        [string]$Municipality,
+        [int]$TopCount,
+        [string]$LogFile
+    )
+
+    if (-not (Test-Path $CandidatesFile)) {
+        throw "Candidates file was not found: $CandidatesFile"
+    }
+
+    $candidateRows = @(Import-Csv -Path $CandidatesFile)
+    if (-not [string]::IsNullOrWhiteSpace($Municipality)) {
+        $candidateRows = @($candidateRows | Where-Object { $_.municipality -eq $Municipality })
+    }
+
+    $existingRows = @()
+    if (Test-Path $RegistryFile) {
+        $existingRows = @(Import-Csv -Path $RegistryFile)
+    }
+
+    $existingUrls = @{}
+    foreach ($row in $existingRows) {
+        $existingUrls[$row.source_url] = $true
+    }
+
+    $rowsToAdd = New-Object System.Collections.Generic.List[object]
+    foreach ($candidate in @($candidateRows | Sort-Object -Property @{ Expression = { [int]$_.score }; Descending = $true }, source_url)) {
+        if ($rowsToAdd.Count -ge $TopCount) {
+            break
+        }
+
+        if ($existingUrls.ContainsKey($candidate.source_url)) {
+            continue
+        }
+
+        $existingUrls[$candidate.source_url] = $true
+        $rowsToAdd.Add([pscustomobject]@{
+            municipality = $candidate.municipality
+            source_org   = $candidate.source_org_candidate
+            source_type  = $candidate.source_type_candidate
+            source_url   = $candidate.source_url
+            notes        = "auto-registered from discover-source-candidates"
+        })
+    }
+
+    $combinedRows = @($existingRows + $rowsToAdd | Sort-Object municipality, source_org, source_url)
+    Write-CsvBom -Rows $combinedRows -Path $RegistryFile
+    Write-LogEntry -Level "info" -Message "register-source-candidates completed: added=$($rowsToAdd.Count) registry=$RegistryFile" -Path $LogFile
+}
+
 function Test-IgnoredCandidateUrl {
     param(
         [string]$SourceUrl,
@@ -2015,5 +2069,8 @@ switch ($Command) {
     }
     "discover-source-candidates" {
         Invoke-DiscoverSourceCandidates -Municipality $MunicipalityName -OutputFile $sourceDiscoveryFile -LogFile $logFile
+    }
+    "register-source-candidates" {
+        Invoke-RegisterSourceCandidates -CandidatesFile $sourceDiscoveryFile -RegistryFile $sourceRegistryFile -Municipality $MunicipalityName -TopCount $TopSourceCandidates -LogFile $logFile
     }
 }
