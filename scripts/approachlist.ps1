@@ -1754,6 +1754,78 @@ function Find-CorporateEntityInText {
     return ""
 }
 
+function Test-CorporateOnlyName {
+    param([string]$Value)
+
+    if ([string]::IsNullOrWhiteSpace($Value)) {
+        return $false
+    }
+
+    return ($Value.Trim() -match '^(株式会社|有限会社|合同会社|合資会社|合名会社|医療法人|学校法人)$')
+}
+
+function Test-GenericPromotionalName {
+    param([string]$Value)
+
+    if ([string]::IsNullOrWhiteSpace($Value)) {
+        return $false
+    }
+
+    $trimmed = $Value.Trim()
+    foreach ($pattern in @(
+            '^快適オフィスを創造する$',
+            '^ログハウスに住もう.*$',
+            '^オリジナルマグカップが.*$',
+            '^十勝、帯広の人材派遣・求人情報なら.*$',
+            '^十勝帯広で新築・注文住宅を建てるなら.*$',
+            '^帯広・旭川の不動産.*$',
+            '^帯広のホテルなら.*$',
+            '^帯広の賃貸や.*$',
+            '^帯広の美容室なら.*$',
+            '^北海道帯広市の就労継続支援B型事業所なら.*$',
+            '^十勝・帯広 .*',
+            '^(北海道|十勝|帯広|岡崎|津山|高山|成田|長浜)(の|で|なら).+',
+            '.*公式ホームページ$',
+            '.*ホームページ$'
+        )) {
+        if ($trimmed -match $pattern) {
+            return $true
+        }
+    }
+
+    return $false
+}
+
+function Get-TitleDisplayNameCandidate {
+    param([string]$TitleSnapshot)
+
+    if ([string]::IsNullOrWhiteSpace($TitleSnapshot)) {
+        return ""
+    }
+
+    $firstSegment = (([string]$TitleSnapshot -split '[|｜]')[0] -replace '\s+', ' ').Trim()
+    if ([string]::IsNullOrWhiteSpace($firstSegment)) {
+        return ""
+    }
+
+    $bracketMatch = [regex]::Match($firstSegment, '【([^】]{2,40})】')
+    if ($bracketMatch.Success) {
+        return ($bracketMatch.Groups[1].Value -replace '\s+', ' ').Trim()
+    }
+
+    $quoteMatch = [regex]::Match($firstSegment, '[「『]([^」』]{2,40})[」』]')
+    if ($quoteMatch.Success) {
+        return ($quoteMatch.Groups[1].Value -replace '\s+', ' ').Trim()
+    }
+
+    $narraMatch = [regex]::Match($firstSegment, 'なら([A-Za-z0-9Ａ-Ｚａ-ｚぁ-んァ-ヶ一-龠・ー\s]{2,40})$')
+    if ($narraMatch.Success) {
+        return ($narraMatch.Groups[1].Value -replace '\s+', ' ').Trim()
+    }
+
+    return ""
+}
+
 function Convert-TitleToCompanyName {
     param(
         [string]$Title,
@@ -1856,7 +1928,8 @@ function Get-NormalizedMemberCompanyName {
         [string]$CompanyName,
         [string]$TitleSnapshot,
         [string]$CandidateUrl,
-        [string]$Municipality
+        [string]$Municipality,
+        [string]$SourceType
     )
 
     $value = [string]$CompanyName
@@ -1900,14 +1973,46 @@ function Get-NormalizedMemberCompanyName {
     $value = ($value -replace '^【株式会社$', '').Trim()
 
     $titleCorporateName = Find-CorporateEntityInText -Text ([string]$TitleSnapshot)
-    if ([string]::IsNullOrWhiteSpace($value) -and -not [string]::IsNullOrWhiteSpace($titleCorporateName)) {
+    $titleDisplayName = Get-TitleDisplayNameCandidate -TitleSnapshot $TitleSnapshot
+    if ((Test-CorporateOnlyName -Value $value) -and -not [string]::IsNullOrWhiteSpace($titleCorporateName)) {
         $value = $titleCorporateName
+    }
+    elseif ((Test-GenericPromotionalName -Value $value) -and -not [string]::IsNullOrWhiteSpace($titleCorporateName)) {
+        $value = $titleCorporateName
+    }
+    elseif ((Test-GenericPromotionalName -Value $value) -and -not [string]::IsNullOrWhiteSpace($titleDisplayName)) {
+        $value = $titleDisplayName
+    }
+    elseif ([string]::IsNullOrWhiteSpace($value) -and -not [string]::IsNullOrWhiteSpace($titleCorporateName)) {
+        $value = $titleCorporateName
+    }
+    elseif ([string]::IsNullOrWhiteSpace($value) -and -not [string]::IsNullOrWhiteSpace($titleDisplayName)) {
+        $value = $titleDisplayName
     }
     elseif ($value -match '公式ホームページ|ホームページ' -and -not [string]::IsNullOrWhiteSpace($titleCorporateName)) {
         $value = $titleCorporateName
     }
     elseif (-not [string]::IsNullOrWhiteSpace($TitleSnapshot) -and [string]::IsNullOrWhiteSpace($corporateName) -and -not [string]::IsNullOrWhiteSpace($titleCorporateName)) {
         $value = $titleCorporateName
+    }
+
+    if (($SourceType -eq "chamber_member_directory" -or $SourceType -eq "jc_member_list" -or $SourceType -eq "rotary_member_voice") -and (Test-GenericPromotionalName -Value $value)) {
+        $candidateSegments = @([string]$TitleSnapshot -split '[|｜]')
+        foreach ($segment in $candidateSegments) {
+            $candidateSegment = ($segment -replace '\s+', ' ').Trim()
+            if ([string]::IsNullOrWhiteSpace($candidateSegment)) {
+                continue
+            }
+
+            if ((Test-GenericPromotionalName -Value $candidateSegment) -or (Test-CorporateOnlyName -Value $candidateSegment)) {
+                continue
+            }
+
+            if ($candidateSegment.Length -ge 2 -and $candidateSegment.Length -le 30 -and $candidateSegment -notmatch '公式|トップページ|ホームページ|お問い合わせ|会社概要|事業案内|サービス|採用|RECRUIT|CONTACT') {
+                $value = $candidateSegment
+                break
+            }
+        }
     }
 
     if ([string]::IsNullOrWhiteSpace($value) -and -not [string]::IsNullOrWhiteSpace($TitleSnapshot)) {
@@ -1932,7 +2037,8 @@ function Test-NormalizedMemberCandidate {
         [string]$NormalizedName,
         [string]$TitleSnapshot,
         [string]$CandidateUrl,
-        [string]$Municipality
+        [string]$Municipality,
+        [string]$SourceType
     )
 
     if ([string]::IsNullOrWhiteSpace($NormalizedName)) {
@@ -1944,6 +2050,14 @@ function Test-NormalizedMemberCandidate {
     }
 
     if ($NormalizedName.Length -lt 2) {
+        return $false
+    }
+
+    if (Test-CorporateOnlyName -Value $NormalizedName) {
+        return $false
+    }
+
+    if (Test-GenericPromotionalName -Value $NormalizedName) {
         return $false
     }
 
@@ -1982,8 +2096,8 @@ function Invoke-NormalizeMemberCandidates {
     $seen = @{}
 
     foreach ($row in $candidateRows) {
-        $normalizedName = Get-NormalizedMemberCompanyName -CompanyName $row.company_name -TitleSnapshot $row.title_snapshot -CandidateUrl $row.website_candidate_url -Municipality $row.municipality
-        if (-not (Test-NormalizedMemberCandidate -NormalizedName $normalizedName -TitleSnapshot $row.title_snapshot -CandidateUrl $row.website_candidate_url -Municipality $row.municipality)) {
+        $normalizedName = Get-NormalizedMemberCompanyName -CompanyName $row.company_name -TitleSnapshot $row.title_snapshot -CandidateUrl $row.website_candidate_url -Municipality $row.municipality -SourceType $row.source_type
+        if (-not (Test-NormalizedMemberCandidate -NormalizedName $normalizedName -TitleSnapshot $row.title_snapshot -CandidateUrl $row.website_candidate_url -Municipality $row.municipality -SourceType $row.source_type)) {
             continue
         }
 
