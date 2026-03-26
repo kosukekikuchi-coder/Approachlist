@@ -1100,6 +1100,26 @@ function Get-SourceCandidateScore {
         $score += 4
         $reasons.Add("member page signal")
     }
+    if ($Url -match '/members?/|/members?$|page_id=|/kaiin|/meibo') {
+        $score += 3
+        $reasons.Add("member url pattern")
+    }
+    if ($combined -match '会員紹介|会員一覧|役員表') {
+        $score += 2
+        $reasons.Add("explicit member listing")
+    }
+    if ($combined -match '大会|議員|退会|コード一覧|方法を解説|シニア・クラブ') {
+        $score -= 5
+        $reasons.Add("non-registry context")
+    }
+    if ($Url -match 'yeg\.jp|jcci\.or\.jp|kachimai\.jp|/entry/ct/|article/index') {
+        $score -= 4
+        $reasons.Add("noisy or national/article source")
+    }
+    if ($Url -match '/entry/p-\d+|/entry/ct/') {
+        $score -= 2
+        $reasons.Add("entry page fragment")
+    }
 
     return [pscustomobject]@{
         Score  = $score
@@ -1172,7 +1192,7 @@ function Invoke-DiscoverSourceCandidates {
                 continue
             }
 
-            if ($url -match 'facebook|instagram|wikipedia|tripadvisor|jalan|rakuten|newt\.net|hankyu-travel|asahi\.co\.jp') {
+            if ($url -match 'facebook|instagram|wikipedia|tripadvisor|jalan|rakuten|newt\.net|hankyu-travel|asahi\.co\.jp|yeg\.jp|jcci\.or\.jp|kachimai\.jp/article|ameblo\.jp|city\.obihiro\.hokkaido\.jp|ideco-ipo-nisa\.com|jc-seniorclub\.jp|jcb\.co\.jp') {
                 continue
             }
 
