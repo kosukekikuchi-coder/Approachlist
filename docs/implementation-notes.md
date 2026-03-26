@@ -1,4 +1,4 @@
-# Minimal CLI Implementation Notes
+﻿# Minimal CLI Implementation Notes
 
 This repository now includes a fixture-driven CLI implementation for the first acceptance-test slice.
 
@@ -19,6 +19,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\approachlist.ps1 run-real-pip
 powershell -ExecutionPolicy Bypass -File .\scripts\approachlist.ps1 run-web-pipeline
 powershell -ExecutionPolicy Bypass -File .\scripts\approachlist.ps1 discover-source-candidates -MunicipalityName 帯広市
 powershell -ExecutionPolicy Bypass -File .\scripts\approachlist.ps1 register-source-candidates -MunicipalityName 帯広市 -SourceDiscoveryPath data/out/source_candidates_obihiro.csv
+powershell -ExecutionPolicy Bypass -File .\scripts\approachlist.ps1 bootstrap-web-pipeline -MunicipalityName 帯広市 -AreasPath config/areas_real.csv -ContractedPath config/contracted_real.csv
 ```
 
 ## Files
@@ -60,6 +61,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\approachlist.ps1 register-sou
 - `normalize-member-candidates` trims noisy titles down toward `member_companies.csv`-style rows for the next detail step.
 - `extract-company-details` is a live-fetch prototype that inspects `website_candidate_url` and derives `address`, `phone`, `contact_form_url`, and `detail_source_url`.
 - `run-real-pipeline` currently covers the region-selection side and usable-list generation side. The source crawling side is being added as separate prototype commands.
-- `run-web-pipeline` chains `build-source-workset` -> `extract-member-candidates` -> `normalize-member-candidates` -> `extract-company-details` -> `build-company-master` -> usable-list/report export for a small live-crawl prototype.
+- `run-web-pipeline` chains `build-source-workset` -> `extract-member-candidates` -> `normalize-member-candidates` -> `extract-company-details` -> `build-company-master` -> usable-list/report export for a live-crawl prototype.
 - `discover-source-candidates` is a source-discovery prototype that queries DuckDuckGo HTML for chamber / YEG / JC / rotary candidates and writes a registry-ready CSV.
 - `register-source-candidates` appends top-scored discovery rows into `source_registry.csv` while skipping duplicate URLs.
+- `bootstrap-web-pipeline` chains municipality lookup -> source discovery -> source registration -> resolve-areas -> run-web-pipeline for an unregistered municipality bootstrap flow.

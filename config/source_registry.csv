@@ -9,3 +9,4 @@ municipality,source_org,source_type,source_url,notes
 秋田市,秋田市社会福祉協議会,association_member_list,https://www.akita-city-shakyo.jp/pages/302/,重複統合確認ソース
 秋田市,秋田観光コンベンション協会,association_member_list,https://www.acvb.or.jp/member/list.html,実データ確認ソース
 上田市,上田青年会議所,jc_member_list,https://uedajc.com/2025/members/,メンバー掲載ソース
+帯広市,帯広商工会議所青年部,chamber_member_directory,https://obihiro-yeg.jp/members/,会員紹介ページ

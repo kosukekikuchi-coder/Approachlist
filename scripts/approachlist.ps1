@@ -1,6 +1,6 @@
 ﻿param(
     [Parameter(Mandatory = $true, Position = 0)]
-    [ValidateSet("resolve-areas", "build-company-master", "report-status", "build-real-sales-list", "run-real-pipeline", "build-source-workset", "extract-member-candidates", "normalize-member-candidates", "extract-company-details", "run-web-pipeline", "discover-source-candidates", "register-source-candidates")]
+    [ValidateSet("resolve-areas", "build-company-master", "report-status", "build-real-sales-list", "run-real-pipeline", "build-source-workset", "extract-member-candidates", "normalize-member-candidates", "extract-company-details", "run-web-pipeline", "discover-source-candidates", "register-source-candidates", "bootstrap-web-pipeline")]
     [string]$Command,
 
     [int]$MinPopulation = 100000,
@@ -29,7 +29,8 @@
     [string]$WebSalesReportPath = "data/out/web_sales_list_report.csv",
     [string]$MunicipalityName = "",
     [string]$SourceDiscoveryPath = "data/out/source_candidates.csv",
-    [int]$TopSourceCandidates = 3
+    [int]$TopSourceCandidates = 3,
+    [string]$BootstrapAreaPath = "data/out/bootstrap_area.csv"
 )
 
 Set-StrictMode -Version Latest
@@ -1270,6 +1271,29 @@ function Invoke-DiscoverSourceCandidates {
     Write-LogEntry -Level "info" -Message "discover-source-candidates completed: municipality=$Municipality candidates=$($outputRows.Count)" -Path $LogFile
 }
 
+function Invoke-BuildBootstrapAreaInput {
+    param(
+        [string]$AreasFile,
+        [string]$Municipality,
+        [string]$OutputFile
+    )
+
+    if (-not (Test-Path $AreasFile)) {
+        throw "Areas file was not found: $AreasFile"
+    }
+
+    $areas = @(Import-Csv -Path $AreasFile | Where-Object { $_.municipality -eq $Municipality })
+    if ($areas.Count -eq 0) {
+        throw "Municipality was not found in areas file: $Municipality"
+    }
+
+    $row = $areas[0]
+    Write-CsvBom -Rows @([pscustomobject]@{
+            municipality = $row.municipality
+            population   = $row.population
+        }) -Path $OutputFile
+}
+
 function Invoke-RegisterSourceCandidates {
     param(
         [string]$CandidatesFile,
@@ -1345,6 +1369,39 @@ function Invoke-RegisterSourceCandidates {
     $combinedRows = @($existingRows + $rowsToAdd | Sort-Object municipality, source_org, source_url)
     Write-CsvBom -Rows $combinedRows -Path $RegistryFile
     Write-LogEntry -Level "info" -Message "register-source-candidates completed: added=$($rowsToAdd.Count) registry=$RegistryFile" -Path $LogFile
+}
+
+function Invoke-BootstrapWebPipeline {
+    param(
+        [string]$Municipality,
+        [string]$AreasFile,
+        [string]$BootstrapAreaFile,
+        [string]$ContractedFile,
+        [string]$CandidatesFile,
+        [string]$RegistryFile,
+        [int]$TopCount,
+        [string]$ResolvedFile,
+        [string]$WorksetFile,
+        [string]$ExtractedCandidatesFile,
+        [string]$NormalizedMembersFile,
+        [string]$DetailsFile,
+        [string]$CompanyMasterFile,
+        [string]$AllOutputFile,
+        [string]$UsableOutputFile,
+        [string]$ReportOutputFile,
+        [string]$LogFile
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Municipality)) {
+        throw "MunicipalityName is required for bootstrap-web-pipeline."
+    }
+
+    Invoke-BuildBootstrapAreaInput -AreasFile $AreasFile -Municipality $Municipality -OutputFile $BootstrapAreaFile
+    Invoke-DiscoverSourceCandidates -Municipality $Municipality -OutputFile $CandidatesFile -LogFile $LogFile
+    Invoke-RegisterSourceCandidates -CandidatesFile $CandidatesFile -RegistryFile $RegistryFile -Municipality $Municipality -TopCount $TopCount -LogFile $LogFile
+    Invoke-ResolveAreas -AreasFile $BootstrapAreaFile -ContractedFile $ContractedFile -OutputFile $ResolvedFile -MinimumPopulation $MinPopulation -MaximumPopulation $MaxPopulation -LogFile $LogFile
+    Invoke-RunWebPipeline -ResolvedFile $ResolvedFile -RegistryFile $RegistryFile -WorksetFile $WorksetFile -CandidatesFile $ExtractedCandidatesFile -NormalizedMembersFile $NormalizedMembersFile -DetailsFile $DetailsFile -CompanyMasterFile $CompanyMasterFile -AllOutputFile $AllOutputFile -UsableOutputFile $UsableOutputFile -ReportOutputFile $ReportOutputFile -LogFile $LogFile
+    Write-LogEntry -Level "info" -Message "bootstrap-web-pipeline completed: municipality=$Municipality" -Path $LogFile
 }
 
 function Test-IgnoredCandidateUrl {
@@ -2097,6 +2154,7 @@ $webSalesListFile = Resolve-RepoPath -Path $WebSalesListPath
 $webSalesUsableFile = Resolve-RepoPath -Path $WebSalesUsablePath
 $webSalesReportFile = Resolve-RepoPath -Path $WebSalesReportPath
 $sourceDiscoveryFile = Resolve-RepoPath -Path $SourceDiscoveryPath
+$bootstrapAreaFile = Resolve-RepoPath -Path $BootstrapAreaPath
 
 switch ($Command) {
     "resolve-areas" {
@@ -2134,5 +2192,8 @@ switch ($Command) {
     }
     "register-source-candidates" {
         Invoke-RegisterSourceCandidates -CandidatesFile $sourceDiscoveryFile -RegistryFile $sourceRegistryFile -Municipality $MunicipalityName -TopCount $TopSourceCandidates -LogFile $logFile
+    }
+    "bootstrap-web-pipeline" {
+        Invoke-BootstrapWebPipeline -Municipality $MunicipalityName -AreasFile $areasFile -BootstrapAreaFile $bootstrapAreaFile -ContractedFile $contractedFile -CandidatesFile $sourceDiscoveryFile -RegistryFile $sourceRegistryFile -TopCount $TopSourceCandidates -ResolvedFile $realResolvedFile -WorksetFile $sourceWorksetFile -ExtractedCandidatesFile $extractedMemberCandidatesFile -NormalizedMembersFile $normalizedMemberCompaniesFile -DetailsFile $extractedCompanyDetailsFile -CompanyMasterFile $companyMasterFile -AllOutputFile $webSalesListFile -UsableOutputFile $webSalesUsableFile -ReportOutputFile $webSalesReportFile -LogFile $logFile
     }
 }
