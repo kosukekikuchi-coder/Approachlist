@@ -832,6 +832,7 @@ function Test-WebUsableCompanyNameQuality {
     }
 
     foreach ($pattern in @(
+            '^TOP$',
             '^株式会社$',
             '^不動産$',
             '^【株式会社',
@@ -841,7 +842,16 @@ function Test-WebUsableCompanyNameQuality {
             '^通信・ICTサービス・ソリューション$',
             '^マネー信用の蔵！.*',
             '^アメニティーな社会の創造に役立つ$',
-            '^成田ケーブル$'
+            '^成田ケーブル$',
+            '銀行$',
+            '^損保ジャパン$',
+            '^明治安田$',
+            '^公益財団法人',
+            '神社$',
+            '寺$',
+            '観光協会$',
+            'グループ$',
+            '^道の駅$'
         )) {
         if ($CompanyName -match $pattern) {
             return $false
@@ -1524,14 +1534,20 @@ function Test-IgnoredCandidateUrl {
             "www.instagram.com",
             "facebook.com",
             "www.facebook.com",
+            "goo.gl",
+            "maps.google.com",
+            "www.google.com",
             "google.co.jp",
             "www.google.co.jp",
             "google.com",
-            "www.google.com",
             "mozilla.org",
             "www.mozilla.org",
             "wordpress.org",
             "ja.wordpress.org",
+            "walkerplus.com",
+            "www.walkerplus.com",
+            "tabiiro.jp",
+            "www.tabiiro.jp",
             "b-mall.ne.jp",
             "www.b-mall.ne.jp",
             "chiba-hatarakikata.com",
@@ -2087,6 +2103,12 @@ function Get-NormalizedMemberCompanyName {
     $value = ($value -replace '^地酒通販│飛騨酒蔵 山車$', '飛騨酒蔵 山車').Trim()
     $value = ($value -replace '^津山市で和食なら個室完備の$', 'お料理わらうかど。').Trim()
     $value = ($value -replace '^株式会社あおばは長浜市から地域の教育に貢献し続けます$', '株式会社あおば').Trim()
+    $value = ($value -replace '^宮崎県都城市の注文住宅・家づくりのことなら崎田工務店$', '崎田工務店').Trim()
+    $value = ($value -replace '^都城市・三股の不動産売買・賃貸専門サイト$', '小川不動産').Trim()
+    $value = ($value -replace '^梅干しの通販なら徳重紅梅園.*$', '徳重紅梅園').Trim()
+    $value = ($value -replace '^宮崎県都城市のコーティングならカークリーンサービスヨシハラ$', 'カークリーンサービスヨシハラ').Trim()
+    $value = ($value -replace '^畳の新調、襖の張り替え、障子なら$', 'たたみ・ふすまの油井').Trim()
+    $value = ($value -replace '^内装工事に携わるなら都城市の株式会社$', '株式会社快誠企画').Trim()
     $value = ($value -replace '^オンデマンド印刷・バリアブル印刷・長尺印刷の高山印刷株式会社.*$', '高山印刷株式会社').Trim()
     $value = ($value -replace '^コンクリート製品製造、薪・ペレットストーブ、融雪を取扱う岐阜県飛騨高山市『富士コンクリート工業株式会社$', '富士コンクリート工業株式会社').Trim()
     $value = ($value -replace '^ツアーコンダクター（添乗員）派遣・研修なら人材派遣の株式会社$', '株式会社TEI').Trim()
@@ -2184,6 +2206,14 @@ function Test-NormalizedMemberCandidate {
     }
 
     if (Test-GenericPromotionalName -Value $NormalizedName) {
+        return $false
+    }
+
+    if ($SourceType -eq "tourism_member_list" -and $NormalizedName -match 'イベント情報集約サイト|トップページ|お花見|エリア特集|観光協会') {
+        return $false
+    }
+
+    if ($SourceType -eq "ethics_member_list" -and $NormalizedName -match 'Google マップ') {
         return $false
     }
 
