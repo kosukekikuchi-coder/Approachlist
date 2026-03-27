@@ -1041,6 +1041,18 @@ function Get-SourceTypeCandidate {
     if ($combined -match '青年会議所|jc') {
         return "jc_member_list"
     }
+    if ($combined -match 'ライオンズクラブ|lions') {
+        return "lions_member_list"
+    }
+    if ($combined -match '倫理法人会') {
+        return "ethics_member_list"
+    }
+    if ($combined -match '観光協会|観光コンベンション協会|物産協会') {
+        return "tourism_member_list"
+    }
+    if ($combined -match '団体会員|協賛企業|賛助会員') {
+        return "corporate_supporter_list"
+    }
     if ($combined -match '商工会議所') {
         return "chamber_member_directory"
     }
@@ -1060,8 +1072,11 @@ function Get-SourceOrgCandidate {
             '([^|｜\-–—»＞]+青年会議所)',
             '([^|｜\-–—»＞]+商工会議所)',
             '([^|｜\-–—»＞]+ロータリークラブ)',
+            '([^|｜\-–—»＞]+ライオンズクラブ)',
+            '([^|｜\-–—»＞]+倫理法人会)',
             '([^|｜\-–—»＞]+物産協会)',
-            '([^|｜\-–—»＞]+観光コンベンション協会)'
+            '([^|｜\-–—»＞]+観光コンベンション協会)',
+            '([^|｜\-–—»＞]+観光協会)'
         )) {
         $match = [regex]::Match($Title, $pattern)
         if ($match.Success) {
@@ -1087,9 +1102,13 @@ function Get-SourceRegistrationPriority {
     $priority = 0
     $url = [string]$Candidate.source_url
     $name = [string]$Candidate.source_org_candidate
+    $query = [string]$Candidate.search_query
 
     if ($url -match '/members?/|/members?$|/member$|/member/|page_id=\d+') {
         $priority += 4
+    }
+    if ($url -match '/links?/|groupmembers|supporter|supporters') {
+        $priority += 3
     }
     if ($url -match 'page_id=17|page_id=2219|page_id=2882') {
         $priority += 1
@@ -1097,11 +1116,55 @@ function Get-SourceRegistrationPriority {
     if ($name -match '会員一覧|会員紹介|役員表') {
         $priority -= 2
     }
-    if ($name -match 'ロータリークラブ|商工会議所|青年会議所|商工会議所青年部') {
+    if ($name -match 'ロータリークラブ|商工会議所|青年会議所|商工会議所青年部|ライオンズクラブ|倫理法人会|観光協会|観光コンベンション協会') {
         $priority += 2
+    }
+    if ($query -match '観光協会|観光コンベンション協会' -and $url -match 'miyakonojo|miyakonojyo') {
+        $priority += 2
+    }
+    if ($url -match 'mapion|houjin\.info|alarmbox|city\.miyakonojo|pref\.miyazaki|kanko-miyazaki\.jp') {
+        $priority -= 6
     }
 
     return $priority
+}
+
+function Test-RegistryReadySourceCandidate {
+    param([pscustomobject]$Candidate)
+
+    $url = [string]$Candidate.source_url
+    $name = [string]$Candidate.source_org_candidate
+
+    if ([string]::IsNullOrWhiteSpace($url)) {
+        return $false
+    }
+
+    foreach ($pattern in @(
+            'mapion',
+            'houjin\.info',
+            'alarmbox',
+            'city\.miyakonojo',
+            'pref\.miyazaki',
+            'kanko-miyazaki\.jp'
+        )) {
+        if ($url -match $pattern) {
+            return $false
+        }
+    }
+
+    foreach ($blockedName in @(
+            'NPO法人を紹介',
+            '協同組合を紹介',
+            '賛助会員',
+            '会員一覧',
+            '会員紹介'
+        )) {
+        if ($name -like "*$blockedName*") {
+            return $false
+        }
+    }
+
+    return $true
 }
 
 function Get-SourceCandidateScore {
@@ -1136,9 +1199,25 @@ function Get-SourceCandidateScore {
         $score += 4
         $reasons.Add("rotary")
     }
+    if ($combined -match 'ライオンズクラブ|lions') {
+        $score += 4
+        $reasons.Add("lions")
+    }
+    if ($combined -match '倫理法人会') {
+        $score += 4
+        $reasons.Add("ethics")
+    }
+    if ($combined -match '観光協会|観光コンベンション協会|物産協会') {
+        $score += 4
+        $reasons.Add("tourism association")
+    }
     if ($combined -match '会員|member|members|名簿|紹介|voice|profile|メンバー') {
         $score += 4
         $reasons.Add("member page signal")
+    }
+    if ($combined -match '会員事業者|団体会員|協賛企業|賛助会員|会員企業') {
+        $score += 4
+        $reasons.Add("corporate listing signal")
     }
     if ($Url -match '/members?/|/members?$|page_id=|/kaiin|/meibo') {
         $score += 3
@@ -1205,7 +1284,13 @@ function Invoke-DiscoverSourceCandidates {
         "$Municipality 商工会議所 会員",
         "$Municipality 商工会議所青年部 会員",
         "$Municipality 青年会議所 会員",
-        "$Municipality ロータリークラブ 会員"
+        "$Municipality ロータリークラブ 会員",
+        "$Municipality ライオンズクラブ 会員",
+        "$Municipality 倫理法人会 会員",
+        "$Municipality 観光協会 会員事業者",
+        "$Municipality 観光コンベンション協会 会員",
+        "$Municipality 団体会員",
+        "$Municipality 協賛企業"
     )
 
     $candidateRows = New-Object System.Collections.Generic.List[object]
@@ -1333,6 +1418,10 @@ function Invoke-RegisterSourceCandidates {
     foreach ($candidate in @($candidateRows | Sort-Object -Property @{ Expression = { [int]$_.score }; Descending = $true }, @{ Expression = { Get-SourceRegistrationPriority -Candidate $_ }; Descending = $true }, source_url)) {
         if ($rowsToAdd.Count -ge $TopCount) {
             break
+        }
+
+        if (-not (Test-RegistryReadySourceCandidate -Candidate $candidate)) {
+            continue
         }
 
         if ($existingUrls.ContainsKey($candidate.source_url)) {
