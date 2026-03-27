@@ -881,7 +881,14 @@ function Test-WebUsableAddressQuality {
             '代表$',
             '〒.*〒',
             '^\D?[\/ー・]\s*',
-            '\[$'
+            '\[$',
+            '^>\s*',
+            '^可\s+',
+            'ご相談ください',
+            'の建設工事会社',
+            'のコーティングなら',
+            '会社.*会社',
+            'お待ちしております'
         )) {
         if ($Address -match $pattern) {
             return $false
