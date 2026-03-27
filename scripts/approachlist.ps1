@@ -1728,9 +1728,18 @@ function Normalize-PostalAddress {
     $normalized = ($normalized -replace '^(所在地|住所)\s*[:：]?\s*', '').Trim()
     $normalized = ($normalized -replace '(Tel|TEL|電話|FAX|営業時間|営業日|定休日|受付時間|メール|Mail|E-mail|Copyright|©).*$','').Trim()
     $normalized = ($normalized -replace '(HOME ABOUT SERVICE COMPANY CONTACT|GROUP HO.*|グループコーポレートサイト.*|Instagram.*|さらに読み込む.*|でフォロー.*|NEWS.*|MENU.*|TAKE OUT.*|店舗情報.*|代表者.*|昨日、.*|アクセス.*|℡.*|フリーダイヤル.*|ページの先頭.*)$','').Trim()
+    $normalized = ($normalized -replace '【.*$','').Trim()
+    $normalized = ($normalized -replace 'お問い合わせをお待ちしております.*$','').Trim()
+    $normalized = ($normalized -replace '代表直通番号.*$','').Trim()
+    $normalized = ($normalized -replace '事務所番号.*$','').Trim()
+    $normalized = ($normalized -replace '建材部／.*$','').Trim()
+    $normalized = ($normalized -replace 'お問合せはこちら.*$','').Trim()
+    $normalized = ($normalized -replace 'top of page.*$','').Trim()
     $normalized = ($normalized -replace '^様\s+', '').Trim()
+    $normalized = ($normalized -replace '^[>可社タ]\s*[｜|]\s*', '').Trim()
     $normalized = ($normalized -replace '/\s*$', '').Trim()
     $normalized = ($normalized -replace '\[$', '').Trim()
+    $normalized = ($normalized -replace '\s+[（(]$', '').Trim()
     return $normalized
 }
 
