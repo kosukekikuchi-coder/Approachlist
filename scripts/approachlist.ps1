@@ -2137,7 +2137,8 @@ function Convert-TitleToCompanyName {
 function Get-StructuredMemberCompaniesFromHtml {
     param(
         [string]$Html,
-        [string]$SourceType
+        [string]$SourceType,
+        [string]$BaseUrl
     )
 
     if ([string]::IsNullOrWhiteSpace($Html)) {
@@ -2148,7 +2149,7 @@ function Get-StructuredMemberCompaniesFromHtml {
         return @()
     }
 
-    $results = New-Object System.Collections.Generic.List[string]
+    $results = New-Object System.Collections.Generic.List[object]
     foreach ($tableMatch in [regex]::Matches($Html, '(?is)<table[^>]*>(.*?)</table>')) {
         $tableHtml = $tableMatch.Groups[1].Value
         $rows = @([regex]::Matches($tableHtml, '(?is)<tr[^>]*>(.*?)</tr>'))
@@ -2175,8 +2176,12 @@ function Get-StructuredMemberCompaniesFromHtml {
         }
 
         for ($rowIndex = 1; $rowIndex -lt $rows.Count; $rowIndex++) {
-            $cells = @([regex]::Matches($rows[$rowIndex].Groups[1].Value, '(?is)<t[hd][^>]*>(.*?)</t[hd]>') | ForEach-Object {
-                    ([System.Net.WebUtility]::HtmlDecode(($_.Groups[1].Value -replace '<[^>]+>', ' ')) -replace '\s+', ' ').Trim()
+            $rowHtml = $rows[$rowIndex].Groups[1].Value
+            $rawCells = @([regex]::Matches($rowHtml, '(?is)<t[hd][^>]*>(.*?)</t[hd]>') | ForEach-Object {
+                    $_.Groups[1].Value
+                })
+            $cells = @($rawCells | ForEach-Object {
+                    ([System.Net.WebUtility]::HtmlDecode(($_ -replace '<[^>]+>', ' ')) -replace '\s+', ' ').Trim()
                 })
             if ($cells.Count -le $companyIndex) {
                 continue
@@ -2187,11 +2192,52 @@ function Get-StructuredMemberCompaniesFromHtml {
                 continue
             }
 
-            $results.Add($companyName)
+            $websiteCandidateUrl = ""
+            $companyCellHtml = ""
+            if ($rawCells.Count -gt $companyIndex) {
+                $companyCellHtml = [string]$rawCells[$companyIndex]
+            }
+
+            $rowLinks = New-Object System.Collections.Generic.List[string]
+            foreach ($linkMatch in [regex]::Matches($companyCellHtml, '(?is)<a[^>]+href=["'']([^"'']+)["''][^>]*>')) {
+                $rowLinks.Add([string]$linkMatch.Groups[1].Value)
+            }
+            if ($rowLinks.Count -eq 0) {
+                foreach ($linkMatch in [regex]::Matches($rowHtml, '(?is)<a[^>]+href=["'']([^"'']+)["''][^>]*>')) {
+                    $rowLinks.Add([string]$linkMatch.Groups[1].Value)
+                }
+            }
+
+            foreach ($href in $rowLinks) {
+                $absoluteUrl = Resolve-AbsoluteUrl -BaseUrl $BaseUrl -Href $href
+                if (Test-IgnoredCandidateUrl -SourceUrl $BaseUrl -CandidateUrl $absoluteUrl) {
+                    continue
+                }
+
+                try {
+                    $baseHost = ([System.Uri]$BaseUrl).Host.ToLowerInvariant()
+                    $candidateHost = ([System.Uri]$absoluteUrl).Host.ToLowerInvariant()
+                    if ($candidateHost -eq $baseHost) {
+                        continue
+                    }
+                }
+                catch {
+                    continue
+                }
+
+                $websiteCandidateUrl = $absoluteUrl
+                break
+            }
+
+            $results.Add([pscustomobject]@{
+                company_name          = $companyName
+                website_candidate_url = $websiteCandidateUrl
+                title_snapshot        = $companyName
+            })
         }
     }
 
-    return @($results | Select-Object -Unique)
+    return @($results | Sort-Object company_name, website_candidate_url -Unique)
 }
 
 function Find-WebsiteCandidateBySearch {
@@ -2282,14 +2328,17 @@ function Invoke-ExtractMemberCandidates {
             continue
         }
 
-        $structuredNames = @(Get-StructuredMemberCompaniesFromHtml -Html ([string]$response.Content) -SourceType ([string]$source.source_type))
-        foreach ($structuredName in $structuredNames) {
-            $normalizedStructuredName = Get-NormalizedMemberCompanyName -CompanyName $structuredName -TitleSnapshot $structuredName -CandidateUrl "" -Municipality $source.municipality -SourceType $source.source_type
-            if (-not (Test-NormalizedMemberCandidate -NormalizedName $normalizedStructuredName -TitleSnapshot $structuredName -CandidateUrl "" -Municipality $source.municipality -SourceType $source.source_type)) {
+        $structuredRows = @(Get-StructuredMemberCompaniesFromHtml -Html ([string]$response.Content) -SourceType ([string]$source.source_type) -BaseUrl ([string]$source.source_url))
+        foreach ($structuredRow in $structuredRows) {
+            $normalizedStructuredName = Get-NormalizedMemberCompanyName -CompanyName $structuredRow.company_name -TitleSnapshot $structuredRow.title_snapshot -CandidateUrl ([string]$structuredRow.website_candidate_url) -Municipality $source.municipality -SourceType $source.source_type
+            if (-not (Test-NormalizedMemberCandidate -NormalizedName $normalizedStructuredName -TitleSnapshot $structuredRow.title_snapshot -CandidateUrl ([string]$structuredRow.website_candidate_url) -Municipality $source.municipality -SourceType $source.source_type)) {
                 continue
             }
 
-            $websiteCandidate = Find-WebsiteCandidateBySearch -CompanyName $normalizedStructuredName -Municipality $source.municipality -LogFile $LogFile
+            $websiteCandidate = [string]$structuredRow.website_candidate_url
+            if ([string]::IsNullOrWhiteSpace($websiteCandidate)) {
+                $websiteCandidate = Find-WebsiteCandidateBySearch -CompanyName $normalizedStructuredName -Municipality $source.municipality -LogFile $LogFile
+            }
             if ([string]::IsNullOrWhiteSpace($websiteCandidate)) {
                 continue
             }
@@ -2307,7 +2356,7 @@ function Invoke-ExtractMemberCandidates {
                 source_type           = $source.source_type
                 source_url            = $source.source_url
                 website_candidate_url = $websiteCandidate
-                title_snapshot        = $structuredName
+                title_snapshot        = $structuredRow.title_snapshot
             })
         }
 
