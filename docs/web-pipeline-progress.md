@@ -86,6 +86,7 @@ Key files:
 - Cleaner Narita source pages improved the five-city usable count.
 - The usable export now requires municipality-match in the extracted address, which reduces obvious cross-area false positives.
 - The Miyakonojo bootstrap test currently reaches `33 total / 27 usable` after source-type cleanup, generic-title normalization, and stronger address extraction.
+- The Shimonoseki bootstrap test now completes end-to-end with `5 total / 3 usable`, confirming that an unregistered municipality can still reach sales-list output after the latest discovery fallback fixes.
 
 ## Current gaps
 

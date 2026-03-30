@@ -1307,6 +1307,62 @@ function Resolve-SearchResultUrl {
     return ""
 }
 
+function Get-SearchResultCandidateLinks {
+    param([object]$Response)
+
+    $results = @()
+    $seen = @{}
+
+    foreach ($link in @($Response.Links)) {
+        $hrefProperty = $link.PSObject.Properties["href"]
+        if ($null -eq $hrefProperty) {
+            continue
+        }
+
+        $href = [string]$hrefProperty.Value
+        if ([string]::IsNullOrWhiteSpace($href) -or $seen.ContainsKey($href)) {
+            continue
+        }
+
+        $seen[$href] = $true
+        $text = ""
+        $innerTextProperty = $link.PSObject.Properties["innerText"]
+        if ($null -ne $innerTextProperty) {
+            $text = [string]$innerTextProperty.Value
+        }
+
+        $results += [pscustomobject]@{
+            href = $href
+            text = $text
+        }
+    }
+
+    $content = [string]$Response.Content
+    if (-not [string]::IsNullOrWhiteSpace($content)) {
+        $patterns = @(
+            'https://www\.bing\.com/ck/a\?[^"''<\s]+',
+            '(?:https?://[^"''<\s]+)?/l/\?kh=-1&amp;uddg=[^"''<\s]+',
+            '(?:https?://[^"''<\s]+)?/l/\?uddg=[^"''<\s]+'
+        )
+
+        foreach ($pattern in $patterns) {
+            foreach ($match in [regex]::Matches($content, $pattern)) {
+                $href = [System.Net.WebUtility]::HtmlDecode($match.Value)
+                if ([string]::IsNullOrWhiteSpace($href) -or $seen.ContainsKey($href)) {
+                    continue
+                }
+                $seen[$href] = $true
+                $results += [pscustomobject]@{
+                    href = $href
+                    text = ""
+                }
+            }
+        }
+    }
+
+    return $results
+}
+
 function Invoke-DiscoverSourceCandidates {
     param(
         [string]$Municipality,
@@ -1336,26 +1392,21 @@ function Invoke-DiscoverSourceCandidates {
 
     foreach ($query in $queries) {
         $searchUrls = @(
-            "https://html.duckduckgo.com/html/?q={0}" -f [System.Uri]::EscapeDataString($query),
-            "https://www.bing.com/search?q={0}" -f [System.Uri]::EscapeDataString($query)
+            "https://www.bing.com/search?q={0}" -f [System.Uri]::EscapeDataString($query),
+            "https://html.duckduckgo.com/html/?q={0}" -f [System.Uri]::EscapeDataString($query)
         )
 
         foreach ($searchUrl in $searchUrls) {
             try {
-                $response = Invoke-WebRequest -Uri $searchUrl -UseBasicParsing -TimeoutSec 20
+                $response = Invoke-WebRequest -Uri $searchUrl -UseBasicParsing -TimeoutSec 8
             }
             catch {
                 Write-LogEntry -Level "warning" -Message "Failed to discover sources for query: $query url=$searchUrl" -Path $LogFile
                 continue
             }
 
-            foreach ($link in @($response.Links)) {
-                $hrefProperty = $link.PSObject.Properties["href"]
-                if ($null -eq $hrefProperty) {
-                    continue
-                }
-
-                $url = Resolve-SearchResultUrl -Href ([string]$hrefProperty.Value)
+            foreach ($link in @(Get-SearchResultCandidateLinks -Response $response)) {
+                $url = Resolve-SearchResultUrl -Href ([string]$link.href)
                 if ([string]::IsNullOrWhiteSpace($url)) {
                     continue
                 }
@@ -1365,12 +1416,7 @@ function Invoke-DiscoverSourceCandidates {
                 }
 
                 $title = Get-WebPageTitle -Url $url -LogFile $LogFile
-                $innerText = ""
-                $innerTextProperty = $link.PSObject.Properties["innerText"]
-                if ($null -ne $innerTextProperty) {
-                    $innerText = [string]$innerTextProperty.Value
-                }
-                $snippet = $innerText
+                $snippet = [string]$link.text
 
                 $scoreResult = Get-SourceCandidateScore -Municipality $Municipality -Title $title -Url $url -Snippet $snippet
                 if ($scoreResult.Score -lt 8) {
