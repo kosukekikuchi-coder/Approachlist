@@ -1791,11 +1791,29 @@ function Find-PostalAddress {
                 return $value
             }
         }
+
+        $addressObjectMatch = [regex]::Match($Html, '"address"\s*:\s*"([^"]+)"')
+        if ($addressObjectMatch.Success) {
+            $value = Normalize-PostalAddress -Value $addressObjectMatch.Groups[1].Value
+            if (-not [string]::IsNullOrWhiteSpace($value) -and $value -match '(〒\d{3}-\d{4}|北海道|東京都|(?:京都|大阪)府|.{2,4}県|.{1,10}(市|区|町|村))') {
+                return $value
+            }
+        }
+
+        $itempropStreetMatch = [regex]::Match($Html, '(?is)itemprop\s*=\s*["'']streetAddress["''][^>]*>(.*?)<')
+        if ($itempropStreetMatch.Success) {
+            $value = Normalize-PostalAddress -Value $itempropStreetMatch.Groups[1].Value
+            if (-not [string]::IsNullOrWhiteSpace($value)) {
+                return $value
+            }
+        }
     }
 
     $patterns = @(
         '(所在地|住所)\s*[:：]?\s*(〒\d{3}-\d{4}\s*)?(北海道|東京都|(?:京都|大阪)府|.{2,4}県).{5,100}?((TEL|電話|FAX|営業時間|営業日|定休日|受付時間|メール|Mail|E-mail|Copyright|©)|$)',
+        '(所在地|住所)\s*[:：]?\s*(〒\d{3}-\d{4}\s*)?[^ ]{0,12}(市|区|町|村).{5,100}?((TEL|電話|FAX|営業時間|営業日|定休日|受付時間|メール|Mail|E-mail|Copyright|©)|$)',
         '(〒\d{3}-\d{4}\s*(北海道|東京都|(?:京都|大阪)府|.{2,4}県).{5,100}?)(?=(TEL|電話|FAX|営業時間|営業日|定休日|受付時間|メール|Mail|E-mail|Copyright|©|$))',
+        '(〒\d{3}-\d{4}\s*[^ ]{0,12}(市|区|町|村).{5,100}?)(?=(TEL|電話|FAX|営業時間|営業日|定休日|受付時間|メール|Mail|E-mail|Copyright|©|$))',
         '((北海道|東京都|(?:京都|大阪)府|.{2,4}県).{8,100}?)(?=(TEL|電話|FAX|営業時間|営業日|定休日|受付時間|メール|Mail|E-mail|Copyright|©|$))'
     )
 
@@ -2291,6 +2309,7 @@ function Invoke-NormalizeMemberCandidates {
             company_name          = $normalizedName
             municipality          = $row.municipality
             source_org            = $row.source_org
+            source_type           = $row.source_type
             source_url            = $row.source_url
             website_candidate_url = $row.website_candidate_url
             title_snapshot        = $row.title_snapshot

@@ -58,8 +58,9 @@ powershell -ExecutionPolicy Bypass -File .\scripts\approachlist.ps1 bootstrap-we
   - `real_sales_list_report.csv`: municipality-level counts
 - `build-source-workset` uses `source_registry.csv` and the selected municipalities to emit the source URLs that should be crawled next.
 - `extract-member-candidates` is a live-fetch prototype that inspects selected source pages and derives company-name candidates from linked websites.
-- `normalize-member-candidates` trims noisy titles down toward `member_companies.csv`-style rows for the next detail step.
+- `normalize-member-candidates` trims noisy titles down toward `member_companies.csv`-style rows for the next detail step and now preserves `source_type` for downstream inspection.
 - `extract-company-details` is a live-fetch prototype that inspects `website_candidate_url` and derives `address`, `phone`, `contact_form_url`, and `detail_source_url`.
+- Address extraction now also looks at JSON-LD `address` fields, `itemprop="streetAddress"`, and looser municipality-first Japanese address patterns to recover more usable rows from live crawls.
 - `run-real-pipeline` currently covers the region-selection side and usable-list generation side. The source crawling side is being added as separate prototype commands.
 - `run-web-pipeline` chains `build-source-workset` -> `extract-member-candidates` -> `normalize-member-candidates` -> `extract-company-details` -> `build-company-master` -> usable-list/report export for a live-crawl prototype.
 - `discover-source-candidates` is a source-discovery prototype that queries DuckDuckGo HTML for chamber / YEG / JC / rotary candidates and writes a registry-ready CSV.
