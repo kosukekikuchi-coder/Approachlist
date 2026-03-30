@@ -66,3 +66,4 @@ powershell -ExecutionPolicy Bypass -File .\scripts\approachlist.ps1 bootstrap-we
 - `discover-source-candidates` is a source-discovery prototype that queries DuckDuckGo HTML for chamber / YEG / JC / rotary candidates and writes a registry-ready CSV.
 - `register-source-candidates` appends top-scored discovery rows into `source_registry.csv` while skipping duplicate URLs.
 - `bootstrap-web-pipeline` chains municipality lookup -> source discovery -> source registration -> resolve-areas -> run-web-pipeline for an unregistered municipality bootstrap flow.
+- When discovery finds zero candidates, bootstrap now fails fast instead of silently producing empty sales-list outputs; if an existing discovery CSV already has rows, the zero-result run does not overwrite it.

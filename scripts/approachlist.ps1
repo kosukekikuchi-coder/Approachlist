@@ -1279,6 +1279,27 @@ function Resolve-SearchResultUrl {
         return [System.Uri]::UnescapeDataString($matches[1])
     }
 
+    $decodedHref = [System.Net.WebUtility]::HtmlDecode($value)
+    if ($decodedHref -match 'bing\.com/ck/a' -and $decodedHref -match '[?&]u=([^&]+)') {
+        $bingValue = [System.Uri]::UnescapeDataString($matches[1])
+        if ($bingValue.StartsWith('a1')) {
+            $base64 = $bingValue.Substring(2)
+            $padding = (4 - ($base64.Length % 4)) % 4
+            if ($padding -gt 0) {
+                $base64 = $base64 + ('=' * $padding)
+            }
+            try {
+                $bytes = [System.Convert]::FromBase64String($base64)
+                $resolved = [System.Text.Encoding]::UTF8.GetString($bytes)
+                if ($resolved.StartsWith("http://") -or $resolved.StartsWith("https://")) {
+                    return $resolved
+                }
+            }
+            catch {
+            }
+        }
+    }
+
     if ($value.StartsWith("http://") -or $value.StartsWith("https://")) {
         return $value
     }
@@ -1314,61 +1335,73 @@ function Invoke-DiscoverSourceCandidates {
     $seen = @{}
 
     foreach ($query in $queries) {
-        $searchUrl = "https://html.duckduckgo.com/html/?q={0}" -f [System.Uri]::EscapeDataString($query)
-        try {
-            $response = Invoke-WebRequest -Uri $searchUrl -UseBasicParsing -TimeoutSec 20
-        }
-        catch {
-            Write-LogEntry -Level "warning" -Message "Failed to discover sources for query: $query" -Path $LogFile
-            continue
-        }
+        $searchUrls = @(
+            "https://html.duckduckgo.com/html/?q={0}" -f [System.Uri]::EscapeDataString($query),
+            "https://www.bing.com/search?q={0}" -f [System.Uri]::EscapeDataString($query)
+        )
 
-        foreach ($link in @($response.Links)) {
-            $hrefProperty = $link.PSObject.Properties["href"]
-            if ($null -eq $hrefProperty) {
+        foreach ($searchUrl in $searchUrls) {
+            try {
+                $response = Invoke-WebRequest -Uri $searchUrl -UseBasicParsing -TimeoutSec 20
+            }
+            catch {
+                Write-LogEntry -Level "warning" -Message "Failed to discover sources for query: $query url=$searchUrl" -Path $LogFile
                 continue
             }
 
-            $url = Resolve-SearchResultUrl -Href ([string]$hrefProperty.Value)
-            if ([string]::IsNullOrWhiteSpace($url)) {
-                continue
-            }
+            foreach ($link in @($response.Links)) {
+                $hrefProperty = $link.PSObject.Properties["href"]
+                if ($null -eq $hrefProperty) {
+                    continue
+                }
 
-            if ($url -match 'facebook|instagram|wikipedia|tripadvisor|jalan|rakuten|newt\.net|hankyu-travel|asahi\.co\.jp|yeg\.jp|jcci\.or\.jp|kachimai\.jp/article|ameblo\.jp|city\.obihiro\.hokkaido\.jp|ideco-ipo-nisa\.com|jc-seniorclub\.jp|jcb\.co\.jp') {
-                continue
-            }
+                $url = Resolve-SearchResultUrl -Href ([string]$hrefProperty.Value)
+                if ([string]::IsNullOrWhiteSpace($url)) {
+                    continue
+                }
 
-            $title = Get-WebPageTitle -Url $url -LogFile $LogFile
-            $innerText = ""
-            $innerTextProperty = $link.PSObject.Properties["innerText"]
-            if ($null -ne $innerTextProperty) {
-                $innerText = [string]$innerTextProperty.Value
-            }
-            $snippet = $innerText
+                if ($url -match 'facebook|instagram|wikipedia|tripadvisor|jalan|rakuten|newt\.net|hankyu-travel|asahi\.co\.jp|yeg\.jp|jcci\.or\.jp|kachimai\.jp/article|ameblo\.jp|city\.obihiro\.hokkaido\.jp|ideco-ipo-nisa\.com|jc-seniorclub\.jp|jcb\.co\.jp|bing\.com/(images|videos|news|maps|travel)|duckduckgo\.com') {
+                    continue
+                }
 
-            $scoreResult = Get-SourceCandidateScore -Municipality $Municipality -Title $title -Url $url -Snippet $snippet
-            if ($scoreResult.Score -lt 8) {
-                continue
-            }
+                $title = Get-WebPageTitle -Url $url -LogFile $LogFile
+                $innerText = ""
+                $innerTextProperty = $link.PSObject.Properties["innerText"]
+                if ($null -ne $innerTextProperty) {
+                    $innerText = [string]$innerTextProperty.Value
+                }
+                $snippet = $innerText
 
-            if ($seen.ContainsKey($url)) {
-                continue
-            }
-            $seen[$url] = $true
+                $scoreResult = Get-SourceCandidateScore -Municipality $Municipality -Title $title -Url $url -Snippet $snippet
+                if ($scoreResult.Score -lt 8) {
+                    continue
+                }
 
-            $candidateRows.Add([pscustomobject]@{
-                municipality          = $Municipality
-                source_org_candidate  = Get-SourceOrgCandidate -Title $title
-                source_type_candidate = Get-SourceTypeCandidate -Title $title -Url $url
-                source_url            = $url
-                search_query          = $query
-                score                 = $scoreResult.Score
-                reason                = $scoreResult.Reason
-            })
+                if ($seen.ContainsKey($url)) {
+                    continue
+                }
+                $seen[$url] = $true
+
+                $candidateRows.Add([pscustomobject]@{
+                    municipality          = $Municipality
+                    source_org_candidate  = Get-SourceOrgCandidate -Title $title
+                    source_type_candidate = Get-SourceTypeCandidate -Title $title -Url $url
+                    source_url            = $url
+                    search_query          = $query
+                    score                 = $scoreResult.Score
+                    reason                = $scoreResult.Reason
+                })
+            }
         }
     }
 
     $outputRows = @($candidateRows | Sort-Object -Property @{ Expression = { [int]$_.score }; Descending = $true }, source_org_candidate, source_url)
+    if ($outputRows.Count -eq 0) {
+        if ((Test-Path $OutputFile) -and ((Get-Item $OutputFile).Length -gt 3)) {
+            Write-LogEntry -Level "warning" -Message "discover-source-candidates found 0 candidates and preserved existing file: $OutputFile" -Path $LogFile
+            return
+        }
+    }
     Write-CsvBom -Rows $outputRows -Path $OutputFile
     Write-LogEntry -Level "info" -Message "discover-source-candidates completed: municipality=$Municipality candidates=$($outputRows.Count)" -Path $LogFile
 }
@@ -1504,6 +1537,13 @@ function Invoke-BootstrapWebPipeline {
 
     Invoke-BuildBootstrapAreaInput -AreasFile $AreasFile -Municipality $Municipality -OutputFile $BootstrapAreaFile
     Invoke-DiscoverSourceCandidates -Municipality $Municipality -OutputFile $CandidatesFile -LogFile $LogFile
+    $discoveredRows = @()
+    if (Test-Path $CandidatesFile) {
+        $discoveredRows = @(Import-Csv -Path $CandidatesFile)
+    }
+    if ($discoveredRows.Count -eq 0) {
+        throw "No source candidates were found for bootstrap municipality: $Municipality"
+    }
     Invoke-RegisterSourceCandidates -CandidatesFile $CandidatesFile -RegistryFile $RegistryFile -Municipality $Municipality -TopCount $TopCount -LogFile $LogFile
     Invoke-ResolveAreas -AreasFile $BootstrapAreaFile -ContractedFile $ContractedFile -OutputFile $ResolvedFile -MinimumPopulation $MinPopulation -MaximumPopulation $MaxPopulation -LogFile $LogFile
     Invoke-RunWebPipeline -ResolvedFile $ResolvedFile -RegistryFile $RegistryFile -WorksetFile $WorksetFile -CandidatesFile $ExtractedCandidatesFile -NormalizedMembersFile $NormalizedMembersFile -DetailsFile $DetailsFile -CompanyMasterFile $CompanyMasterFile -AllOutputFile $AllOutputFile -UsableOutputFile $UsableOutputFile -ReportOutputFile $ReportOutputFile -LogFile $LogFile
