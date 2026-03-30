@@ -85,7 +85,7 @@ Key files:
 - The pipeline already produces usable rows without hand-maintained `member_companies.csv` / `company_details.csv`.
 - Cleaner Narita source pages improved the five-city usable count.
 - The usable export now requires municipality-match in the extracted address, which reduces obvious cross-area false positives.
-- The Miyakonojo bootstrap test currently reaches `45 total / 30 usable` after source-type cleanup and stronger address extraction.
+- The Miyakonojo bootstrap test currently reaches `33 total / 27 usable` after source-type cleanup, generic-title normalization, and stronger address extraction.
 
 ## Current gaps
 

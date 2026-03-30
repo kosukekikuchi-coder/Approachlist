@@ -1929,6 +1929,8 @@ function Test-GenericPromotionalName {
             '^快適オフィスを創造する$',
             '^ログハウスに住もう.*$',
             '^オリジナルマグカップが.*$',
+            '^信頼される安心を、社会へ。$',
+            '^こだわりの園芸用土は.*$',
             '^十勝、帯広の人材派遣・求人情報なら.*$',
             '^十勝帯広で新築・注文住宅を建てるなら.*$',
             '^帯広・旭川の不動産.*$',
@@ -2140,6 +2142,7 @@ function Get-NormalizedMemberCompanyName {
     $value = ($value -replace '^宮崎県都城市の注文住宅・家づくりのことなら崎田工務店$', '崎田工務店').Trim()
     $value = ($value -replace '^都城市・三股の不動産売買・賃貸専門サイト$', '小川不動産').Trim()
     $value = ($value -replace '^梅干しの通販なら徳重紅梅園.*$', '徳重紅梅園').Trim()
+    $value = ($value -replace '^こだわりの園芸用土はグリーンライフ日向$', 'グリーンライフ日向').Trim()
     $value = ($value -replace '^宮崎県都城市のコーティングならカークリーンサービスヨシハラ$', 'カークリーンサービスヨシハラ').Trim()
     $value = ($value -replace '^畳の新調、襖の張り替え、障子なら$', 'たたみ・ふすまの油井').Trim()
     $value = ($value -replace '^内装工事に携わるなら都城市の株式会社$', '株式会社快誠企画').Trim()
@@ -2254,6 +2257,15 @@ function Test-NormalizedMemberCandidate {
     }
 
     if ($SourceType -eq "ethics_member_list" -and $NormalizedName -match 'Google マップ') {
+        return $false
+    }
+
+    if (($SourceType -eq "tourism_member_list") -and $NormalizedName -match '道の駅|まちおこし応援団|ツーリズム$|地域振興') {
+        return $false
+    }
+
+    if (($SourceType -eq "lions_member_list" -or $SourceType -eq "ethics_member_list" -or $SourceType -eq "rotary_member_voice") -and
+        $NormalizedName -match '銀行$|^損保ジャパン$|^明治安田$|神社$|寺$|^公益財団法人|観光協会$|グループ$|ロータリークラブ|ライオンズクラブ|倫理法人会') {
         return $false
     }
 
