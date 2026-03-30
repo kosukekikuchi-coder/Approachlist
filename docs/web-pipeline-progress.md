@@ -87,12 +87,15 @@ Key files:
 - The usable export now requires municipality-match in the extracted address, which reduces obvious cross-area false positives.
 - The Miyakonojo bootstrap test currently reaches `33 total / 27 usable` after source-type cleanup, generic-title normalization, and stronger address extraction.
 - The Shimonoseki bootstrap test now completes end-to-end with `5 total / 3 usable`, confirming that an unregistered municipality can still reach sales-list output after the latest discovery fallback fixes.
+- Structured member-table extraction is now prototyped for chamber / JC pages. On Shimonoseki this reduced obvious non-company carryover, but usable growth is still limited because official-site search for extracted member names remains weak.
+- Bootstrap now reuses an existing municipality registry when source discovery temporarily returns `0` candidates, so unregistered-area setup is less likely to fail just because search results fluctuate.
 
 ## Current gaps
 
 - Company-name normalization still leaves generic titles in some rows.
 - Generic company-name normalization is still the main driver of noisy rows.
 - Some sources produce noisy external links that need stronger source-type-specific filtering.
+- Chamber / JC structured extraction still depends on weak official-site search when source pages do not link directly to company sites.
 - Score signals are still mostly defaulted in the live-crawl path.
 
 ## Next focus

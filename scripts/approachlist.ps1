@@ -1588,9 +1588,20 @@ function Invoke-BootstrapWebPipeline {
         $discoveredRows = @(Import-Csv -Path $CandidatesFile)
     }
     if ($discoveredRows.Count -eq 0) {
-        throw "No source candidates were found for bootstrap municipality: $Municipality"
+        $existingRegistryRows = @()
+        if (Test-Path $RegistryFile) {
+            $existingRegistryRows = @(Import-Csv -Path $RegistryFile | Where-Object { $_.municipality -eq $Municipality })
+        }
+
+        if ($existingRegistryRows.Count -eq 0) {
+            throw "No source candidates were found for bootstrap municipality: $Municipality"
+        }
+
+        Write-LogEntry -Level "warning" -Message "bootstrap-web-pipeline reused existing registry rows for municipality=$Municipality because discovery returned 0 candidates" -Path $LogFile
     }
-    Invoke-RegisterSourceCandidates -CandidatesFile $CandidatesFile -RegistryFile $RegistryFile -Municipality $Municipality -TopCount $TopCount -LogFile $LogFile
+    else {
+        Invoke-RegisterSourceCandidates -CandidatesFile $CandidatesFile -RegistryFile $RegistryFile -Municipality $Municipality -TopCount $TopCount -LogFile $LogFile
+    }
     Invoke-ResolveAreas -AreasFile $BootstrapAreaFile -ContractedFile $ContractedFile -OutputFile $ResolvedFile -MinimumPopulation $MinPopulation -MaximumPopulation $MaxPopulation -LogFile $LogFile
     Invoke-RunWebPipeline -ResolvedFile $ResolvedFile -RegistryFile $RegistryFile -WorksetFile $WorksetFile -CandidatesFile $ExtractedCandidatesFile -NormalizedMembersFile $NormalizedMembersFile -DetailsFile $DetailsFile -CompanyMasterFile $CompanyMasterFile -AllOutputFile $AllOutputFile -UsableOutputFile $UsableOutputFile -ReportOutputFile $ReportOutputFile -LogFile $LogFile
     Write-LogEntry -Level "info" -Message "bootstrap-web-pipeline completed: municipality=$Municipality" -Path $LogFile
@@ -2123,6 +2134,132 @@ function Convert-TitleToCompanyName {
     }
 }
 
+function Get-StructuredMemberCompaniesFromHtml {
+    param(
+        [string]$Html,
+        [string]$SourceType
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Html)) {
+        return @()
+    }
+
+    if ($SourceType -ne "chamber_member_directory" -and $SourceType -ne "jc_member_list") {
+        return @()
+    }
+
+    $results = New-Object System.Collections.Generic.List[string]
+    foreach ($tableMatch in [regex]::Matches($Html, '(?is)<table[^>]*>(.*?)</table>')) {
+        $tableHtml = $tableMatch.Groups[1].Value
+        $rows = @([regex]::Matches($tableHtml, '(?is)<tr[^>]*>(.*?)</tr>'))
+        if ($rows.Count -lt 2) {
+            continue
+        }
+
+        $headerCells = @([regex]::Matches($rows[0].Groups[1].Value, '(?is)<t[hd][^>]*>(.*?)</t[hd]>') | ForEach-Object {
+                ([System.Net.WebUtility]::HtmlDecode(($_.Groups[1].Value -replace '<[^>]+>', ' ')) -replace '\s+', ' ').Trim()
+            })
+        if ($headerCells.Count -eq 0) {
+            continue
+        }
+
+        $companyIndex = -1
+        for ($i = 0; $i -lt $headerCells.Count; $i++) {
+            if ($headerCells[$i] -match '事業所名|企業名|会社名') {
+                $companyIndex = $i
+                break
+            }
+        }
+        if ($companyIndex -lt 0) {
+            continue
+        }
+
+        for ($rowIndex = 1; $rowIndex -lt $rows.Count; $rowIndex++) {
+            $cells = @([regex]::Matches($rows[$rowIndex].Groups[1].Value, '(?is)<t[hd][^>]*>(.*?)</t[hd]>') | ForEach-Object {
+                    ([System.Net.WebUtility]::HtmlDecode(($_.Groups[1].Value -replace '<[^>]+>', ' ')) -replace '\s+', ' ').Trim()
+                })
+            if ($cells.Count -le $companyIndex) {
+                continue
+            }
+
+            $companyName = $cells[$companyIndex]
+            if ([string]::IsNullOrWhiteSpace($companyName)) {
+                continue
+            }
+
+            $results.Add($companyName)
+        }
+    }
+
+    return @($results | Select-Object -Unique)
+}
+
+function Find-WebsiteCandidateBySearch {
+    param(
+        [string]$CompanyName,
+        [string]$Municipality,
+        [string]$LogFile
+    )
+
+    if ([string]::IsNullOrWhiteSpace($CompanyName)) {
+        return ""
+    }
+
+    $companyToken = $CompanyName
+    $companyToken = ($companyToken -replace '（株）|㈱|株式会社|（有）|㈲|有限会社|（同）|合同会社|（弁）|弁護士法人|（医）|医療法人|（司）|（行）', '')
+    $companyToken = ($companyToken -replace '\s+', '').Trim()
+
+    $queries = @(
+        ('"{0}" {1} 公式' -f $CompanyName, $Municipality),
+        ('"{0}" {1}' -f $CompanyName, $Municipality),
+        ('{0} {1} 公式' -f $CompanyName, $Municipality),
+        ('{0} {1}' -f $CompanyName, $Municipality)
+    ) | Select-Object -Unique
+
+    foreach ($query in $queries) {
+        $searchUrl = "https://www.bing.com/search?q={0}" -f [System.Uri]::EscapeDataString($query)
+        try {
+            $response = Invoke-WebRequest -Uri $searchUrl -UseBasicParsing -TimeoutSec 8
+        }
+        catch {
+            Write-LogEntry -Level "warning" -Message "Failed to search company website candidate: $query" -Path $LogFile
+            continue
+        }
+
+        foreach ($link in @(Get-SearchResultCandidateLinks -Response $response)) {
+            $url = Resolve-SearchResultUrl -Href ([string]$link.href)
+            if ([string]::IsNullOrWhiteSpace($url)) {
+                continue
+            }
+
+            if (Test-IgnoredCandidateUrl -SourceUrl "https://search.local/" -CandidateUrl $url) {
+                continue
+            }
+
+            if ($url -match 'localhost:\d+|support\.microsoft\.com|go\.microsoft\.com|zhidao\.baidu\.com|zhihu\.com|github\.com|chiebukuro\.yahoo\.co\.jp|cmoney\.tw|genius\.com|wikipedia\.org|city\..+\.lg\.jp|pref\..+\.lg\.jp|mhlw\.go\.jp|oshiete\.goo\.ne\.jp|faq\..+\.lg\.jp|faq\.pref\..+\.jp|biz-draft-yamaguchi\.jp|bousai.*portal') {
+                continue
+            }
+
+            $title = Get-WebPageTitle -Url $url -LogFile $LogFile
+            if ([string]::IsNullOrWhiteSpace($title)) {
+                continue
+            }
+
+            if ($title -match '商工会議所|青年会議所|ロータリー|ライオンズクラブ|倫理法人会|観光協会|Mapion|事業者の紹介|会員一覧|ビジネスドラフト|防災サイト') {
+                continue
+            }
+
+            if ($companyToken.Length -ge 2 -and $title -notmatch [regex]::Escape($companyToken)) {
+                continue
+            }
+
+            return $url
+        }
+    }
+
+    return ""
+}
+
 function Invoke-ExtractMemberCandidates {
     param(
         [string]$WorksetFile,
@@ -2133,14 +2270,45 @@ function Invoke-ExtractMemberCandidates {
     $worksetRows = @(Import-Csv -Path $WorksetFile)
     $candidates = New-Object System.Collections.Generic.List[object]
     $seenKeys = @{}
+    $successfulSourceFetchCount = 0
 
     foreach ($source in $worksetRows) {
         try {
             $response = Invoke-WebRequest -Uri $source.source_url -UseBasicParsing -TimeoutSec 20
+            $successfulSourceFetchCount += 1
         }
         catch {
             Write-LogEntry -Level "warning" -Message "Failed to fetch source page: $($source.source_url)" -Path $LogFile
             continue
+        }
+
+        $structuredNames = @(Get-StructuredMemberCompaniesFromHtml -Html ([string]$response.Content) -SourceType ([string]$source.source_type))
+        foreach ($structuredName in $structuredNames) {
+            $normalizedStructuredName = Get-NormalizedMemberCompanyName -CompanyName $structuredName -TitleSnapshot $structuredName -CandidateUrl "" -Municipality $source.municipality -SourceType $source.source_type
+            if (-not (Test-NormalizedMemberCandidate -NormalizedName $normalizedStructuredName -TitleSnapshot $structuredName -CandidateUrl "" -Municipality $source.municipality -SourceType $source.source_type)) {
+                continue
+            }
+
+            $websiteCandidate = Find-WebsiteCandidateBySearch -CompanyName $normalizedStructuredName -Municipality $source.municipality -LogFile $LogFile
+            if ([string]::IsNullOrWhiteSpace($websiteCandidate)) {
+                continue
+            }
+
+            $dedupeKey = "{0}|{1}|{2}" -f $source.municipality, $normalizedStructuredName, $websiteCandidate
+            if ($seenKeys.ContainsKey($dedupeKey)) {
+                continue
+            }
+            $seenKeys[$dedupeKey] = $true
+
+            $candidates.Add([pscustomobject]@{
+                company_name          = $normalizedStructuredName
+                municipality          = $source.municipality
+                source_org            = $source.source_org
+                source_type           = $source.source_type
+                source_url            = $source.source_url
+                website_candidate_url = $websiteCandidate
+                title_snapshot        = $structuredName
+            })
         }
 
         foreach ($link in @($response.Links)) {
@@ -2179,6 +2347,10 @@ function Invoke-ExtractMemberCandidates {
     }
 
     $outputRows = @($candidates | Sort-Object municipality, source_org, company_name)
+    if ($outputRows.Count -eq 0 -and $successfulSourceFetchCount -eq 0 -and (Test-Path $OutputFile) -and ((Get-Item $OutputFile).Length -gt 3)) {
+        Write-LogEntry -Level "warning" -Message "extract-member-candidates preserved existing file because all source fetches failed: $OutputFile" -Path $LogFile
+        return
+    }
     Write-CsvBom -Rows $outputRows -Path $OutputFile
     Write-LogEntry -Level "info" -Message "extract-member-candidates completed: candidates=$($outputRows.Count)" -Path $LogFile
 }
@@ -2347,6 +2519,10 @@ function Test-NormalizedMemberCandidate {
     }
 
     if (($SourceType -eq "tourism_member_list") -and $NormalizedName -match '道の駅|まちおこし応援団|ツーリズム$|地域振興') {
+        return $false
+    }
+
+    if (($SourceType -eq "chamber_member_directory") -and $NormalizedName -match '商工会議所|商工会|企業合同就職フェア|経済センサス|ハロートレーニング|リサイクル協会|キャンペーンサイト|会員一覧$|事業者の紹介|防災サイト|ビジネスドラフト|web版') {
         return $false
     }
 
