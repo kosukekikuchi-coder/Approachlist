@@ -90,6 +90,7 @@ Key files:
 - Structured member-table extraction is now prototyped for chamber / JC pages. On Shimonoseki this reduced obvious non-company carryover, but usable growth is still limited because official-site search for extracted member names remains weak.
 - Bootstrap now reuses an existing municipality registry when source discovery temporarily returns `0` candidates, so unregistered-area setup is less likely to fail just because search results fluctuate.
 - Chamber / JC structured extraction now prefers row-level external links when a member table already exposes a company website, which should reduce search-engine dependence on those source types.
+- The live-crawl path now keeps the last good candidate/detail CSVs when source fetch or detail fetch temporarily fails across the whole step, so bootstrap reruns are less likely to collapse to `0 usable` because of transient network issues.
 
 ## Current gaps
 

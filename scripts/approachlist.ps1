@@ -93,6 +93,45 @@ function Write-CsvBom {
     [System.IO.File]::WriteAllLines($Path, $csv, $encoding)
 }
 
+function Get-LastGoodCachePath {
+    param([string]$Path)
+
+    return "{0}.lastgood.csv" -f $Path
+}
+
+function Save-LastGoodCsvCache {
+    param(
+        [string]$SourcePath
+    )
+
+    if (-not (Test-Path $SourcePath)) {
+        return
+    }
+
+    $cachePath = Get-LastGoodCachePath -Path $SourcePath
+    Ensure-ParentDirectory -Path $cachePath
+    Copy-Item -Path $SourcePath -Destination $cachePath -Force
+}
+
+function Restore-LastGoodCsvCache {
+    param(
+        [string]$TargetPath
+    )
+
+    $cachePath = Get-LastGoodCachePath -Path $TargetPath
+    if (-not (Test-Path $cachePath)) {
+        return $false
+    }
+
+    if ((Get-Item $cachePath).Length -le 3) {
+        return $false
+    }
+
+    Ensure-ParentDirectory -Path $TargetPath
+    Copy-Item -Path $cachePath -Destination $TargetPath -Force
+    return $true
+}
+
 function Read-SimpleYaml {
     param([string]$Path)
 
@@ -2396,11 +2435,23 @@ function Invoke-ExtractMemberCandidates {
     }
 
     $outputRows = @($candidates | Sort-Object municipality, source_org, company_name)
-    if ($outputRows.Count -eq 0 -and $successfulSourceFetchCount -eq 0 -and (Test-Path $OutputFile) -and ((Get-Item $OutputFile).Length -gt 3)) {
-        Write-LogEntry -Level "warning" -Message "extract-member-candidates preserved existing file because all source fetches failed: $OutputFile" -Path $LogFile
-        return
+    if ($outputRows.Count -eq 0 -and $successfulSourceFetchCount -eq 0) {
+        if ((Test-Path $OutputFile) -and ((Get-Item $OutputFile).Length -gt 3)) {
+            Save-LastGoodCsvCache -SourcePath $OutputFile
+            Write-LogEntry -Level "warning" -Message "extract-member-candidates preserved existing file because all source fetches failed: $OutputFile" -Path $LogFile
+            return
+        }
+
+        if (Restore-LastGoodCsvCache -TargetPath $OutputFile) {
+            Write-LogEntry -Level "warning" -Message "extract-member-candidates restored last good cache because all source fetches failed: $OutputFile" -Path $LogFile
+            return
+        }
     }
+
     Write-CsvBom -Rows $outputRows -Path $OutputFile
+    if ($outputRows.Count -gt 0) {
+        Save-LastGoodCsvCache -SourcePath $OutputFile
+    }
     Write-LogEntry -Level "info" -Message "extract-member-candidates completed: candidates=$($outputRows.Count)" -Path $LogFile
 }
 
@@ -2640,7 +2691,22 @@ function Invoke-NormalizeMemberCandidates {
     }
 
     $outputRows = @($normalizedRows | Sort-Object municipality, source_org, company_name)
+    if ($outputRows.Count -eq 0) {
+        if ((Test-Path $OutputFile) -and ((Get-Item $OutputFile).Length -gt 3)) {
+            Save-LastGoodCsvCache -SourcePath $OutputFile
+            Write-LogEntry -Level "warning" -Message "normalize-member-candidates preserved existing file because input normalization produced 0 rows: $OutputFile" -Path $LogFile
+            return
+        }
+
+        if (Restore-LastGoodCsvCache -TargetPath $OutputFile) {
+            Write-LogEntry -Level "warning" -Message "normalize-member-candidates restored last good cache because input normalization produced 0 rows: $OutputFile" -Path $LogFile
+            return
+        }
+    }
     Write-CsvBom -Rows $outputRows -Path $OutputFile
+    if ($outputRows.Count -gt 0) {
+        Save-LastGoodCsvCache -SourcePath $OutputFile
+    }
     Write-LogEntry -Level "info" -Message "normalize-member-candidates completed: companies=$($outputRows.Count)" -Path $LogFile
 }
 
@@ -2653,6 +2719,7 @@ function Invoke-ExtractCompanyDetails {
 
     $memberRows = @(Import-Csv -Path $MembersFile)
     $detailRows = New-Object System.Collections.Generic.List[object]
+    $successfulDetailFetchCount = 0
 
     foreach ($row in $memberRows) {
         $website = [string]$row.website_candidate_url
@@ -2666,6 +2733,7 @@ function Invoke-ExtractCompanyDetails {
         $contactFormUrl = ""
 
         if ($null -ne $page) {
+            $successfulDetailFetchCount += 1
             $address = Find-PostalAddress -Text $page.Text -Html $page.Html
             $phone = Find-PhoneNumber -Text $page.Text
             $contactFormUrl = Find-ContactFormUrl -BaseUrl $website -Response $page.Response
@@ -2692,7 +2760,35 @@ function Invoke-ExtractCompanyDetails {
     }
 
     $outputRows = @($detailRows | Sort-Object municipality, company_name)
+    if ($successfulDetailFetchCount -eq 0) {
+        if ((Test-Path $OutputFile) -and ((Get-Item $OutputFile).Length -gt 3)) {
+            Save-LastGoodCsvCache -SourcePath $OutputFile
+            Write-LogEntry -Level "warning" -Message "extract-company-details preserved existing file because all detail fetches failed: $OutputFile" -Path $LogFile
+            return
+        }
+
+        if (Restore-LastGoodCsvCache -TargetPath $OutputFile) {
+            Write-LogEntry -Level "warning" -Message "extract-company-details restored last good cache because all detail fetches failed: $OutputFile" -Path $LogFile
+            return
+        }
+    }
+
+    if ($outputRows.Count -eq 0) {
+        if ((Test-Path $OutputFile) -and ((Get-Item $OutputFile).Length -gt 3)) {
+            Save-LastGoodCsvCache -SourcePath $OutputFile
+            Write-LogEntry -Level "warning" -Message "extract-company-details preserved existing file because extraction produced 0 rows: $OutputFile" -Path $LogFile
+            return
+        }
+
+        if (Restore-LastGoodCsvCache -TargetPath $OutputFile) {
+            Write-LogEntry -Level "warning" -Message "extract-company-details restored last good cache because extraction produced 0 rows: $OutputFile" -Path $LogFile
+            return
+        }
+    }
     Write-CsvBom -Rows $outputRows -Path $OutputFile
+    if ($outputRows.Count -gt 0) {
+        Save-LastGoodCsvCache -SourcePath $OutputFile
+    }
     Write-LogEntry -Level "info" -Message "extract-company-details completed: rows=$($outputRows.Count)" -Path $LogFile
 }
 
