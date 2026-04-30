@@ -1,6 +1,6 @@
 ﻿param(
     [Parameter(Mandatory = $true, Position = 0)]
-    [ValidateSet("resolve-areas", "build-company-master", "report-status", "build-real-sales-list", "run-real-pipeline", "build-source-workset", "extract-member-candidates", "normalize-member-candidates", "extract-company-details", "run-web-pipeline", "discover-source-candidates", "register-source-candidates", "bootstrap-web-pipeline")]
+    [ValidateSet("resolve-areas", "build-company-master", "report-status", "build-real-sales-list", "run-real-pipeline", "build-source-workset", "extract-member-candidates", "normalize-member-candidates", "resolve-company-websites", "extract-company-details", "run-web-pipeline", "discover-source-candidates", "register-source-candidates", "bootstrap-web-pipeline")]
     [string]$Command,
 
     [int]$MinPopulation = 100000,
@@ -23,6 +23,8 @@
     [string]$SourceWorksetPath = "data/out/source_workset.csv",
     [string]$ExtractedMemberCandidatesPath = "data/out/extracted_member_candidates.csv",
     [string]$NormalizedMemberCompaniesPath = "data/out/normalized_member_companies.csv",
+    [string]$ResolvedMemberCompaniesPath = "data/out/resolved_member_companies.csv",
+    [string]$WebsiteResolutionCandidatesPath = "data/out/website_resolution_candidates.csv",
     [string]$ExtractedCompanyDetailsPath = "data/out/extracted_company_details.csv",
     [string]$WebSalesListPath = "data/out/web_sales_list.csv",
     [string]$WebSalesUsablePath = "data/out/web_sales_list_usable.csv",
@@ -30,6 +32,7 @@
     [string]$MunicipalityName = "",
     [string]$SourceDiscoveryPath = "data/out/source_candidates.csv",
     [int]$TopSourceCandidates = 3,
+    [int]$TopWebsiteCandidates = 5,
     [string]$BootstrapAreaPath = "data/out/bootstrap_area.csv"
 )
 
@@ -68,6 +71,93 @@ function Write-LogEntry {
     Add-Content -Path $Path -Value $line -Encoding UTF8
 }
 
+function Test-UnnormalizedCompanyDisplayName {
+    param([string]$Name)
+
+    if ([string]::IsNullOrWhiteSpace($Name)) {
+        return $false
+    }
+
+    return ($Name -match '㈱|㈲|㍿|（株）|\(株\)|（有）|\(有\)|（同）|\(同\)|（資）|\(資\)|（名）|\(名\)|（合）|\(合\)')
+}
+
+function Convert-OutputRowsForCsv {
+    param(
+        [object[]]$Rows,
+        [string]$Path
+    )
+
+    $convertedRows = New-Object System.Collections.Generic.List[object]
+    $normalizedCount = 0
+    $residualCount = 0
+    $normalizedSamples = New-Object System.Collections.Generic.List[string]
+    $residualSamples = New-Object System.Collections.Generic.List[string]
+
+    foreach ($row in $Rows) {
+        if ($null -eq $row) {
+            continue
+        }
+
+        $hasCompanyName = $false
+        $props = [ordered]@{}
+
+        foreach ($prop in $row.PSObject.Properties) {
+            $value = $prop.Value
+
+            if ($prop.Name -eq 'company_name') {
+                $hasCompanyName = $true
+                $originalName = [string]$value
+                $canonicalName = Convert-ToCanonicalCompanyDisplayName -Name (Get-SearchCompanyName -Name $originalName)
+
+                if (-not [string]::IsNullOrWhiteSpace($originalName) -and $canonicalName -ne $originalName) {
+                    $normalizedCount += 1
+                    if ($normalizedSamples.Count -lt 5) {
+                        $normalizedSamples.Add(("{0} -> {1}" -f $originalName, $canonicalName)) | Out-Null
+                    }
+                }
+
+                if (Test-UnnormalizedCompanyDisplayName -Name $canonicalName) {
+                    $residualCount += 1
+                    if ($residualSamples.Count -lt 5) {
+                        $residualSamples.Add($canonicalName) | Out-Null
+                    }
+                }
+
+                $value = $canonicalName
+            }
+
+            $props[$prop.Name] = $value
+        }
+
+        if ($hasCompanyName) {
+            $convertedRows.Add([pscustomobject]$props) | Out-Null
+        }
+        else {
+            $convertedRows.Add($row) | Out-Null
+        }
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($script:CsvNormalizationLogPath)) {
+        if ($normalizedCount -gt 0) {
+            $message = "csv output normalization applied: path=$Path normalized_company_names=$normalizedCount"
+            if ($normalizedSamples.Count -gt 0) {
+                $message = "{0} samples=[{1}]" -f $message, ($normalizedSamples -join '; ')
+            }
+            Write-LogEntry -Level "info" -Message $message -Path $script:CsvNormalizationLogPath
+        }
+
+        if ($residualCount -gt 0) {
+            $message = "csv output contains company_name values that still look unnormalized: path=$Path residual_company_names=$residualCount"
+            if ($residualSamples.Count -gt 0) {
+                $message = "{0} samples=[{1}]" -f $message, ($residualSamples -join '; ')
+            }
+            Write-LogEntry -Level "warning" -Message $message -Path $script:CsvNormalizationLogPath
+        }
+    }
+
+    return $convertedRows.ToArray()
+}
+
 function Write-CsvBom {
     param(
         [Parameter(Mandatory = $true)]
@@ -87,6 +177,8 @@ function Write-CsvBom {
     else {
         $rowArray = @($Rows)
     }
+
+    $rowArray = @(Convert-OutputRowsForCsv -Rows $rowArray -Path $Path)
 
     $csv = @($rowArray | ConvertTo-Csv -NoTypeInformation)
     $encoding = New-Object System.Text.UTF8Encoding($true)
@@ -220,6 +312,222 @@ function Normalize-CompanyName {
     $normalized = $normalized -replace '(\u682A\u5F0F\u4F1A\u793E|\u6709\u9650\u4F1A\u793E|\u5408\u540C\u4F1A\u793E|\u5408\u8CC7\u4F1A\u793E|\u5408\u540D\u4F1A\u793E|\uFF08\u682A\uFF09|\u3231)', ''
     $normalized = $normalized -replace '[\s\u3000\(\)\uFF08\uFF09]', ''
     return $normalized
+}
+
+function New-UnicodeString {
+    param([int[]]$CodePoints)
+
+    return (-join ($CodePoints | ForEach-Object { [char]$_ }))
+}
+
+function Convert-ToCanonicalCompanyDisplayName {
+    param([string]$Name)
+
+    if ([string]::IsNullOrWhiteSpace($Name)) {
+        return ""
+    }
+
+    $kabushiki = New-UnicodeString @(0x682A, 0x5F0F, 0x4F1A, 0x793E)
+    $yugen = New-UnicodeString @(0x6709, 0x9650, 0x4F1A, 0x793E)
+    $godo = New-UnicodeString @(0x5408, 0x540C, 0x4F1A, 0x793E)
+    $goshi = New-UnicodeString @(0x5408, 0x8CC7, 0x4F1A, 0x793E)
+    $gomei = New-UnicodeString @(0x5408, 0x540D, 0x4F1A, 0x793E)
+    $openParen = '('
+    $closeParen = ')'
+    $fwOpenParen = New-UnicodeString @(0xFF08)
+    $fwCloseParen = New-UnicodeString @(0xFF09)
+    $kabbrev = New-UnicodeString @(0x3231)
+    $ybrev = New-UnicodeString @(0x3232)
+
+    $normalized = [System.Net.WebUtility]::HtmlDecode($Name)
+    $normalized = $normalized.Normalize([Text.NormalizationForm]::FormKC)
+    $normalized = $normalized -replace '[\u3000\s]+', ' '
+    $normalized = $normalized.Trim()
+
+    $normalized = $normalized.Replace($openParen + [char]0x682A + $closeParen, $kabushiki)
+    $normalized = $normalized.Replace($fwOpenParen + [char]0x682A + $fwCloseParen, $kabushiki)
+    $normalized = $normalized.Replace($kabbrev, $kabushiki)
+
+    $normalized = $normalized.Replace($openParen + [char]0x6709 + $closeParen, $yugen)
+    $normalized = $normalized.Replace($fwOpenParen + [char]0x6709 + $fwCloseParen, $yugen)
+    $normalized = $normalized.Replace($ybrev, $yugen)
+
+    $normalized = $normalized.Replace($openParen + [char]0x540C + $closeParen, $godo)
+    $normalized = $normalized.Replace($fwOpenParen + [char]0x540C + $fwCloseParen, $godo)
+    $normalized = $normalized.Replace($openParen + [char]0x5408 + $closeParen, $godo)
+    $normalized = $normalized.Replace($fwOpenParen + [char]0x5408 + $fwCloseParen, $godo)
+
+    $normalized = $normalized.Replace($openParen + [char]0x8CC7 + $closeParen, $goshi)
+    $normalized = $normalized.Replace($fwOpenParen + [char]0x8CC7 + $fwCloseParen, $goshi)
+    $normalized = $normalized.Replace($openParen + [char]0x540D + $closeParen, $gomei)
+    $normalized = $normalized.Replace($fwOpenParen + [char]0x540D + $fwCloseParen, $gomei)
+
+    $normalized = $normalized -replace '\(\s*株\s*\)', $kabushiki
+    $normalized = $normalized -replace '\(\s*有\s*\)', $yugen
+    $normalized = $normalized -replace '\(\s*同\s*\)', $godo
+    $normalized = $normalized -replace '\(\s*資\s*\)', $goshi
+    $normalized = $normalized -replace '\(\s*名\s*\)', $gomei
+
+    $normalized = $normalized -replace '\s+', ' '
+    return $normalized.Trim()
+}
+
+function Get-MunicipalityFromAddress {
+    param(
+        [string]$Address,
+        [string]$FallbackMunicipality = ""
+    )
+
+    if (-not [string]::IsNullOrWhiteSpace($Address)) {
+        $normalized = [System.Net.WebUtility]::HtmlDecode($Address)
+        $normalized = ($normalized -replace '\s+', ' ').Trim()
+        $match = [regex]::Match($normalized, '(?:北海道|東京都|京都府|大阪府|.{2,4}県)?(?<municipality>[^0-9\s,、]{1,20}?(?:市|区|町|村))')
+        if ($match.Success) {
+            return $match.Groups['municipality'].Value.Trim()
+        }
+    }
+
+    return ([string]$FallbackMunicipality).Trim()
+}
+
+function Split-IndustryText {
+    param([string]$IndustryText)
+
+    $industry1 = ""
+    $industry2 = ""
+
+    if ([string]::IsNullOrWhiteSpace($IndustryText)) {
+        return [pscustomobject]@{
+            industry1 = ""
+            industry2 = ""
+        }
+    }
+
+    $normalized = [System.Net.WebUtility]::HtmlDecode($IndustryText)
+    $normalized = ($normalized -replace '\s+', ' ').Trim()
+    $parts = @(
+        $normalized -split '\s*(?:／|/|、|，|,|・|及び| and )\s*'
+    ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+
+    if ($parts.Count -ge 1) {
+        $industry1 = $parts[0].Trim()
+    }
+    if ($parts.Count -ge 2) {
+        $industry2 = $parts[1].Trim()
+    }
+
+    return [pscustomobject]@{
+        industry1 = $industry1
+        industry2 = $industry2
+    }
+}
+
+function Get-SearchCompanyName {
+    param([string]$Name)
+
+    if ([string]::IsNullOrWhiteSpace($Name)) {
+        return ""
+    }
+
+    $normalized = $Name.Trim()
+    $normalized = $normalized -replace '（株）|\(株\)|㈱|㍿', '株式会社'
+    $normalized = $normalized -replace '（有）|\(有\)|㈲', '有限会社'
+    $normalized = $normalized -replace '（同）|\(同\)', '合同会社'
+    $normalized = $normalized -replace '（資）|\(資\)', '合資会社'
+    $normalized = $normalized -replace '（名）|\(名\)', '合名会社'
+    $normalized = $normalized -replace '（合）|\(合\)', '合同会社'
+    $normalized = $normalized -replace '\s+', ' '
+    return $normalized.Trim()
+}
+
+function Get-DefaultHttpHeaders {
+    return @{
+        "User-Agent"      = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36"
+        "Accept-Language" = "ja,en-US;q=0.9,en;q=0.8"
+        "Cache-Control"   = "no-cache"
+    }
+}
+
+function Get-CompanySearchNameVariants {
+    param([string]$Name)
+
+    $baseName = Get-SearchCompanyName -Name $Name
+    if ([string]::IsNullOrWhiteSpace($baseName)) {
+        return @()
+    }
+
+    $variants = New-Object System.Collections.Generic.List[string]
+    $variants.Add($baseName)
+
+    $forms = @("株式会社", "有限会社", "合同会社", "合資会社", "合名会社")
+    foreach ($form in $forms) {
+        if ($baseName -match ("^{0}(.+)$" -f [regex]::Escape($form))) {
+            $body = $matches[1].Trim()
+            if (-not [string]::IsNullOrWhiteSpace($body)) {
+                $variants.Add(("{0}{1}" -f $body, $form).Trim())
+            }
+        }
+        elseif ($baseName -match ("^(.+?){0}$" -f [regex]::Escape($form))) {
+            $body = $matches[1].Trim()
+            if (-not [string]::IsNullOrWhiteSpace($body)) {
+                $variants.Add(("{0}{1}" -f $form, $body).Trim())
+            }
+        }
+    }
+
+    $seen = @{}
+    $results = New-Object System.Collections.Generic.List[string]
+    foreach ($variant in $variants) {
+        $key = Normalize-CompanyName -Name $variant
+        if ([string]::IsNullOrWhiteSpace($key) -or $seen.ContainsKey($key)) {
+            continue
+        }
+
+        $seen[$key] = $true
+        $results.Add($variant)
+    }
+
+    return $results.ToArray()
+}
+
+function Get-WebsiteSearchQueries {
+    param(
+        [string]$CompanyName,
+        [string]$Municipality,
+        [string]$PersonName
+    )
+
+    $queries = New-Object System.Collections.Generic.List[string]
+    foreach ($variant in @(Get-CompanySearchNameVariants -Name $CompanyName)) {
+        if ([string]::IsNullOrWhiteSpace($Municipality)) {
+            $queries.Add(('"{0}"' -f $variant))
+            $queries.Add($variant)
+            if (-not [string]::IsNullOrWhiteSpace($PersonName)) {
+                $queries.Add(('"{0}" "{1}"' -f $variant, $PersonName))
+            }
+            continue
+        }
+
+        $queries.Add(('"{0}" {1}' -f $variant, $Municipality))
+        $queries.Add(('{0} {1}' -f $variant, $Municipality))
+        if (-not [string]::IsNullOrWhiteSpace($PersonName)) {
+            $queries.Add(('"{0}" "{1}" {2}' -f $variant, $PersonName, $Municipality))
+        }
+    }
+
+    $seen = @{}
+    $results = New-Object System.Collections.Generic.List[string]
+    foreach ($query in $queries) {
+        $key = ($query -replace '\s+', ' ').Trim().ToLowerInvariant()
+        if ([string]::IsNullOrWhiteSpace($key) -or $seen.ContainsKey($key)) {
+            continue
+        }
+
+        $seen[$key] = $true
+        $results.Add(($query -replace '\s+', ' ').Trim())
+    }
+
+    return ($results | Select-Object -First 3)
 }
 
 function Test-DuplicateCandidate {
@@ -721,8 +1029,16 @@ function Invoke-BuildCompanyMasterCommand {
         $selectedMap[$municipality] = $true
     }
 
-    $members = Import-Csv -Path $MembersFile | Where-Object { $selectedMap.ContainsKey($_.municipality) }
-    $details = Import-Csv -Path $DetailsFile
+    $members = @()
+    if ((Test-Path $MembersFile) -and ((Get-Item $MembersFile).Length -gt 3)) {
+        $members = @(Import-Csv -Path $MembersFile | Where-Object { $selectedMap.ContainsKey($_.municipality) })
+    }
+
+    $details = @()
+    if ((Test-Path $DetailsFile) -and ((Get-Item $DetailsFile).Length -gt 3)) {
+        $details = @(Import-Csv -Path $DetailsFile)
+    }
+
     $scoring = Read-SimpleYaml -Path $ScoringFile
 
     $outputRows = @(Invoke-BuildCompanyMaster -MemberRows $members -DetailRows $details -ScoringConfig $scoring -LogFile $LogFile)
@@ -1319,6 +1635,10 @@ function Resolve-SearchResultUrl {
     }
 
     $decodedHref = [System.Net.WebUtility]::HtmlDecode($value)
+    if ($decodedHref -match 'google\.[^/]+/url\?.*?[?&]q=([^&]+)') {
+        return [System.Uri]::UnescapeDataString($matches[1])
+    }
+
     if ($decodedHref -match 'bing\.com/ck/a' -and $decodedHref -match '[?&]u=([^&]+)') {
         $bingValue = [System.Uri]::UnescapeDataString($matches[1])
         if ($bingValue.StartsWith('a1')) {
@@ -1337,6 +1657,10 @@ function Resolve-SearchResultUrl {
             catch {
             }
         }
+    }
+
+    if ($decodedHref -match 'bing\.com/ck/a|duckduckgo\.com|bing\.com/(search|travel|images|videos|news|maps)|google\.[^/]+/(search|imgres)') {
+        return ""
     }
 
     if ($value.StartsWith("http://") -or $value.StartsWith("https://")) {
@@ -1397,6 +1721,141 @@ function Get-SearchResultCandidateLinks {
                 }
             }
         }
+    }
+
+    return $results
+}
+
+function Get-BingOrganicSearchResults {
+    param([string]$Html)
+
+    if ([string]::IsNullOrWhiteSpace($Html)) {
+        return @()
+    }
+
+    $results = New-Object System.Collections.Generic.List[object]
+    foreach ($match in [regex]::Matches($Html, '(?is)<li[^>]*class="[^"]*\bb_algo\b[^"]*"[^>]*>(.*?)</li>')) {
+        $block = [string]$match.Groups[1].Value
+        $anchorMatch = [regex]::Match($block, '(?is)<h2[^>]*>\s*<a[^>]+href="([^"]+)"[^>]*>(.*?)</a>')
+        if (-not $anchorMatch.Success) {
+            continue
+        }
+
+        $href = [System.Net.WebUtility]::HtmlDecode($anchorMatch.Groups[1].Value)
+        $title = [System.Net.WebUtility]::HtmlDecode(($anchorMatch.Groups[2].Value -replace '<[^>]+>', ' '))
+        $snippet = ""
+        $snippetMatch = [regex]::Match($block, '(?is)<p[^>]*>(.*?)</p>')
+        if ($snippetMatch.Success) {
+            $snippet = [System.Net.WebUtility]::HtmlDecode(($snippetMatch.Groups[1].Value -replace '<[^>]+>', ' '))
+        }
+
+        $results.Add([pscustomobject]@{
+            href    = ($href -replace '\s+', ' ').Trim()
+            title   = ($title -replace '\s+', ' ').Trim()
+            snippet = ($snippet -replace '\s+', ' ').Trim()
+        })
+    }
+
+    return $results.ToArray()
+}
+
+function Get-DuckDuckGoOrganicSearchResults {
+    param([string]$Html)
+
+    if ([string]::IsNullOrWhiteSpace($Html)) {
+        return @()
+    }
+
+    $results = New-Object System.Collections.Generic.List[object]
+    foreach ($anchorMatch in [regex]::Matches($Html, '(?is)<a[^>]*class="[^"]*\bresult__a\b[^"]*"[^>]*href="([^"]+)"[^>]*>(.*?)</a>')) {
+        $href = [System.Net.WebUtility]::HtmlDecode($anchorMatch.Groups[1].Value)
+        $title = [System.Net.WebUtility]::HtmlDecode(($anchorMatch.Groups[2].Value -replace '<[^>]+>', ' '))
+        $snippet = ""
+
+        $snippetSourceHtml = ""
+        $remainingLength = [Math]::Min(2500, $Html.Length - $anchorMatch.Index)
+        if ($remainingLength -gt 0) {
+            $remainingHtml = $Html.Substring($anchorMatch.Index, $remainingLength)
+            $snippetMatch = [regex]::Match($remainingHtml, '(?is)<a[^>]*class="[^"]*\bresult__snippet\b[^"]*"[^>]*>(.*?)</a>|<div[^>]*class="[^"]*\bresult__snippet\b[^"]*"[^>]*>(.*?)</div>')
+            if ($snippetMatch.Success) {
+                $snippetSourceHtml = if ($snippetMatch.Groups[1].Success) { $snippetMatch.Groups[1].Value } else { $snippetMatch.Groups[2].Value }
+            }
+        }
+
+        if (-not [string]::IsNullOrWhiteSpace($snippetSourceHtml)) {
+            $snippet = [System.Net.WebUtility]::HtmlDecode(($snippetSourceHtml -replace '<[^>]+>', ' '))
+        }
+
+        $results.Add([pscustomobject]@{
+            href    = ($href -replace '\s+', ' ').Trim()
+            title   = ($title -replace '\s+', ' ').Trim()
+            snippet = ($snippet -replace '\s+', ' ').Trim()
+        })
+    }
+
+    return $results.ToArray()
+}
+
+function Get-YahooJapanOrganicSearchResults {
+    param([string]$Html)
+
+    if ([string]::IsNullOrWhiteSpace($Html)) {
+        return @()
+    }
+
+    $sectionMatch = [regex]::Match($Html, '(?is)<div[^>]*id="web"[^>]*>.*?<ol>(.*?)</ol>')
+    if (-not $sectionMatch.Success) {
+        return @()
+    }
+
+    $results = New-Object System.Collections.Generic.List[object]
+    foreach ($match in [regex]::Matches($sectionMatch.Groups[1].Value, '(?is)<li>\s*<a[^>]+href="([^"]+)"[^>]*>(.*?)</a>\s*<div>(.*?)</div>\s*<em>(.*?)</em>')) {
+        $href = [System.Net.WebUtility]::HtmlDecode($match.Groups[1].Value)
+        $title = [System.Net.WebUtility]::HtmlDecode(($match.Groups[2].Value -replace '<[^>]+>', ' '))
+        $snippet = [System.Net.WebUtility]::HtmlDecode(($match.Groups[3].Value -replace '<[^>]+>', ' '))
+
+        $results.Add([pscustomobject]@{
+            href    = ($href -replace '\s+', ' ').Trim()
+            title   = ($title -replace '\s+', ' ').Trim()
+            snippet = ($snippet -replace '\s+', ' ').Trim()
+        })
+    }
+
+    return $results.ToArray()
+}
+
+function Invoke-SearchResultFetch {
+    param(
+        [string]$Engine,
+        [string]$Query,
+        [string]$LogFile
+    )
+
+    $searchUrl = ""
+    switch ($Engine) {
+        "yahoojapan" { $searchUrl = "https://search.yahoo.co.jp/search?p={0}" -f [System.Uri]::EscapeDataString($Query) }
+        "bing" { $searchUrl = "https://www.bing.com/search?q={0}" -f [System.Uri]::EscapeDataString($Query) }
+        "duckduckgo" { $searchUrl = "https://html.duckduckgo.com/html/?q={0}" -f [System.Uri]::EscapeDataString($Query) }
+        default { throw "Unsupported search engine: $Engine" }
+    }
+
+    try {
+        $response = Invoke-WebRequest -Uri $searchUrl -UseBasicParsing -TimeoutSec 8
+    }
+    catch {
+        Write-LogEntry -Level "warning" -Message "Failed to search website candidates: engine=$Engine query=$Query" -Path $LogFile
+        return @()
+    }
+
+    $results = switch ($Engine) {
+        "yahoojapan" { @(Get-YahooJapanOrganicSearchResults -Html ([string]$response.Content)) }
+        "bing" { @(Get-BingOrganicSearchResults -Html ([string]$response.Content)) }
+        "duckduckgo" { @(Get-DuckDuckGoOrganicSearchResults -Html ([string]$response.Content)) }
+    }
+
+    foreach ($result in $results) {
+        $result | Add-Member -NotePropertyName "engine" -NotePropertyValue $Engine -Force
+        $result | Add-Member -NotePropertyName "search_query" -NotePropertyValue $Query -Force
     }
 
     return $results
@@ -1608,11 +2067,14 @@ function Invoke-BootstrapWebPipeline {
         [string]$WorksetFile,
         [string]$ExtractedCandidatesFile,
         [string]$NormalizedMembersFile,
+        [string]$ResolvedMembersFile,
+        [string]$WebsiteResolutionCandidatesFile,
         [string]$DetailsFile,
         [string]$CompanyMasterFile,
         [string]$AllOutputFile,
         [string]$UsableOutputFile,
         [string]$ReportOutputFile,
+        [int]$TopWebsiteCandidateCount,
         [string]$LogFile
     )
 
@@ -1642,7 +2104,7 @@ function Invoke-BootstrapWebPipeline {
         Invoke-RegisterSourceCandidates -CandidatesFile $CandidatesFile -RegistryFile $RegistryFile -Municipality $Municipality -TopCount $TopCount -LogFile $LogFile
     }
     Invoke-ResolveAreas -AreasFile $BootstrapAreaFile -ContractedFile $ContractedFile -OutputFile $ResolvedFile -MinimumPopulation $MinPopulation -MaximumPopulation $MaxPopulation -LogFile $LogFile
-    Invoke-RunWebPipeline -ResolvedFile $ResolvedFile -RegistryFile $RegistryFile -WorksetFile $WorksetFile -CandidatesFile $ExtractedCandidatesFile -NormalizedMembersFile $NormalizedMembersFile -DetailsFile $DetailsFile -CompanyMasterFile $CompanyMasterFile -AllOutputFile $AllOutputFile -UsableOutputFile $UsableOutputFile -ReportOutputFile $ReportOutputFile -LogFile $LogFile
+    Invoke-RunWebPipeline -ResolvedFile $ResolvedFile -RegistryFile $RegistryFile -WorksetFile $WorksetFile -CandidatesFile $ExtractedCandidatesFile -NormalizedMembersFile $NormalizedMembersFile -ResolvedMembersFile $ResolvedMembersFile -WebsiteResolutionCandidatesFile $WebsiteResolutionCandidatesFile -DetailsFile $DetailsFile -CompanyMasterFile $CompanyMasterFile -AllOutputFile $AllOutputFile -UsableOutputFile $UsableOutputFile -ReportOutputFile $ReportOutputFile -TopWebsiteCandidateCount $TopWebsiteCandidateCount -LogFile $LogFile
     Write-LogEntry -Level "info" -Message "bootstrap-web-pipeline completed: municipality=$Municipality" -Path $LogFile
 }
 
@@ -1683,14 +2145,52 @@ function Test-IgnoredCandidateUrl {
             "google.co.jp",
             "www.google.co.jp",
             "google.com",
+            "go.microsoft.com",
+            "support.microsoft.com",
             "mozilla.org",
             "www.mozilla.org",
+            "linkedin.com",
+            "www.linkedin.com",
+            "youtube.com",
+            "www.youtube.com",
+            "youtu.be",
+            "zhihu.com",
+            "www.zhihu.com",
+            "baidu.com",
+            "www.baidu.com",
+            "myoji.namedic.jp",
+            "minkan.co.jp",
+            "kyujin.hellowork.mhlw.go.jp",
             "wordpress.org",
             "ja.wordpress.org",
             "walkerplus.com",
             "www.walkerplus.com",
             "tabiiro.jp",
             "www.tabiiro.jp",
+            "homes.co.jp",
+            "www.homes.co.jp",
+            "athome.co.jp",
+            "www.athome.co.jp",
+            "ekiten.jp",
+            "www.ekiten.jp",
+            "kensetumap.com",
+            "www.kensetumap.com",
+            "info.gbiz.go.jp",
+        "houjin.info",
+        "www.houjin.info",
+        "bankdb.jp",
+        "www.bankdb.jp",
+        "rakuten.co.jp",
+        "travel.rakuten.co.jp",
+        "jalan.net",
+        "www.jalan.net",
+        "nta.co.jp",
+        "search.nta.co.jp",
+        "estate.sesh.jp",
+        "prtimes.jp",
+        "www.prtimes.jp",
+            "atpress.ne.jp",
+            "www.atpress.ne.jp",
             "b-mall.ne.jp",
             "www.b-mall.ne.jp",
             "chiba-hatarakikata.com",
@@ -1737,7 +2237,7 @@ function Get-WebPageTitle {
     )
 
     try {
-        $response = Invoke-WebRequest -Uri $Url -UseBasicParsing -TimeoutSec 20
+        $response = Invoke-WebRequest -Uri $Url -UseBasicParsing -TimeoutSec 20 -Headers (Get-DefaultHttpHeaders)
         $byteStream = New-Object System.IO.MemoryStream
         $response.RawContentStream.Position = 0
         $response.RawContentStream.CopyTo($byteStream)
@@ -1786,7 +2286,7 @@ function Get-DecodedWebPage {
     )
 
     try {
-        $response = Invoke-WebRequest -Uri $Url -UseBasicParsing -TimeoutSec 20
+        $response = Invoke-WebRequest -Uri $Url -UseBasicParsing -TimeoutSec 20 -Headers (Get-DefaultHttpHeaders)
         $byteStream = New-Object System.IO.MemoryStream
         $response.RawContentStream.Position = 0
         $response.RawContentStream.CopyTo($byteStream)
@@ -2173,6 +2673,556 @@ function Convert-TitleToCompanyName {
     }
 }
 
+function Test-IntermediaryEvidenceHost {
+    param([string]$Url)
+
+    if ([string]::IsNullOrWhiteSpace($Url)) {
+        return $false
+    }
+
+    $hostName = ""
+    try {
+        $hostName = ([System.Uri]$Url).Host.ToLowerInvariant()
+    }
+    catch {
+        return $false
+    }
+
+    $hostName = $hostName -replace '^www\.', ''
+    foreach ($pattern in @(
+            "athome.co.jp",
+            "homes.co.jp",
+            "ekiten.jp",
+            "kensetumap.com",
+            "info.gbiz.go.jp",
+            "prtimes.jp",
+            "atpress.ne.jp",
+            "bankdb.jp",
+            "houjin.info",
+            "baseconnect.in",
+            "buzip.net",
+            "rakuten.co.jp",
+            "jalan.net",
+            "nta.co.jp",
+            "estate.sesh.jp"
+        )) {
+        if ($hostName -eq $pattern -or $hostName.EndsWith(".$pattern")) {
+            return $true
+        }
+    }
+
+    return $false
+}
+
+function Get-LinkedWebsiteCandidatesFromHtml {
+    param(
+        [string]$Html,
+        [string]$SourceUrl
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Html) -or [string]::IsNullOrWhiteSpace($SourceUrl)) {
+        return @()
+    }
+
+    $sourceHost = ""
+    try {
+        $sourceHost = ([System.Uri]$SourceUrl).Host.ToLowerInvariant()
+    }
+    catch {
+        return @()
+    }
+
+    $results = New-Object System.Collections.Generic.List[object]
+    $seen = @{}
+    foreach ($match in [regex]::Matches($Html, '(?is)<a[^>]+href="([^"]+)"[^>]*>(.*?)</a>')) {
+        $href = [System.Net.WebUtility]::HtmlDecode([string]$match.Groups[1].Value)
+        $text = [System.Net.WebUtility]::HtmlDecode(([string]$match.Groups[2].Value -replace '<[^>]+>', ' '))
+        $resolved = Resolve-SearchResultUrl -Href $href
+        if ([string]::IsNullOrWhiteSpace($resolved)) {
+            $resolved = $href
+        }
+
+        try {
+            $uri = [System.Uri]$resolved
+        }
+        catch {
+            continue
+        }
+
+        if (-not $uri.IsAbsoluteUri -or [string]::IsNullOrWhiteSpace($uri.Scheme) -or -not $uri.Scheme.StartsWith("http")) {
+            continue
+        }
+
+        $candidateHost = $uri.Host.ToLowerInvariant()
+        if ($candidateHost -eq $sourceHost) {
+            continue
+        }
+
+        if (Test-IgnoredCandidateUrl -SourceUrl $SourceUrl -CandidateUrl $resolved) {
+            continue
+        }
+
+        $key = $resolved.TrimEnd('/')
+        if ($seen.ContainsKey($key)) {
+            continue
+        }
+
+        $seen[$key] = $true
+        $results.Add([pscustomobject]@{
+            href = $resolved
+            text = ($text -replace '\s+', ' ').Trim()
+        })
+    }
+
+    return $results.ToArray()
+}
+
+function Convert-WebsiteResolutionScoreToStatus {
+    param([int]$Score)
+
+    if ($Score -ge 12) {
+        return "official_confirmed"
+    }
+    if ($Score -ge 8) {
+        return "official_probable"
+    }
+    if ($Score -ge 5) {
+        return "weak_candidate"
+    }
+
+    return "unknown"
+}
+
+function Get-WebsiteCandidatesFromSourceResult {
+    param(
+        [string]$CompanyName,
+        [string]$PersonName,
+        [string]$Municipality,
+        [string]$SearchQuery,
+        [string]$SearchEngine,
+        [string]$ResultUrl,
+        [string]$ResultTitle,
+        [string]$ResultSnippet,
+        [string]$LogFile
+    )
+
+    $candidates = New-Object System.Collections.Generic.List[object]
+    $page = $null
+    $pageTitle = $ResultTitle
+    $pageText = ""
+
+    $score = Get-WebsiteResolutionScore -CompanyName $CompanyName -PersonName $PersonName -Municipality $Municipality -CandidateUrl $ResultUrl -SearchQuery $SearchQuery -Snippet $ResultSnippet -Title $ResultTitle -PageText ""
+    $status = Convert-WebsiteResolutionScoreToStatus -Score ([int]$score.Score)
+    if (($status -ne "unknown") -and -not (Test-IntermediaryEvidenceHost -Url $ResultUrl)) {
+        $candidates.Add([pscustomobject]@{
+            company_name  = $CompanyName
+            person_name   = $PersonName
+            municipality  = $Municipality
+            search_query  = $SearchQuery
+            search_engine = $SearchEngine
+            candidate_url = $ResultUrl
+            title         = $ResultTitle
+            snippet       = $ResultSnippet
+            score         = [int]$score.Score
+            score_reason  = [string]$score.Reason
+            status        = $status
+            evidence_type = "search_result"
+        })
+    }
+
+    $isIntermediarySource = Test-IntermediaryEvidenceHost -Url $ResultUrl
+    $needsEvidencePage = $isIntermediarySource -or $status -eq "unknown"
+    if ($needsEvidencePage) {
+        $page = Get-DecodedWebPage -Url $ResultUrl -LogFile $LogFile
+        if ($null -ne $page) {
+            $pageText = [string]$page.Text
+            $titleMatch = [regex]::Match([string]$page.Html, '<title[^>]*>(.*?)</title>', [System.Text.RegularExpressions.RegexOptions]::IgnoreCase -bor [System.Text.RegularExpressions.RegexOptions]::Singleline)
+            if ($titleMatch.Success) {
+                $pageTitle = ([System.Net.WebUtility]::HtmlDecode($titleMatch.Groups[1].Value) -replace '\s+', ' ').Trim()
+            }
+
+            if (-not $isIntermediarySource) {
+                $pageScore = Get-WebsiteResolutionScore -CompanyName $CompanyName -PersonName $PersonName -Municipality $Municipality -CandidateUrl $ResultUrl -SearchQuery $SearchQuery -Snippet $ResultSnippet -Title $pageTitle -PageText $pageText
+                $pageStatus = Convert-WebsiteResolutionScoreToStatus -Score ([int]$pageScore.Score)
+                if ($pageStatus -ne "unknown" -and [string]$pageScore.Reason -notmatch 'blocked_domain_or_portal') {
+                    $candidates.Add([pscustomobject]@{
+                        company_name  = $CompanyName
+                        person_name   = $PersonName
+                        municipality  = $Municipality
+                        search_query  = $SearchQuery
+                        search_engine = $SearchEngine
+                        candidate_url = $ResultUrl
+                        title         = $pageTitle
+                        snippet       = $ResultSnippet
+                        score         = [int]$pageScore.Score
+                        score_reason  = [string]$pageScore.Reason
+                        status        = $pageStatus
+                        evidence_type = "search_result_page"
+                    })
+                }
+            }
+
+            if ($isIntermediarySource) {
+                foreach ($linked in @(Get-LinkedWebsiteCandidatesFromHtml -Html ([string]$page.Html) -SourceUrl $ResultUrl)) {
+                    $linkContext = [string]$linked.text
+                    if ($linkContext -notmatch '(?i)home|hp|web|website|official|site|company|corp|profile|about') {
+                        continue
+                    }
+
+                    $linkedTitle = Get-WebPageTitle -Url ([string]$linked.href) -LogFile $LogFile
+                    $contextSnippet = ("{0} {1} {2}" -f $ResultSnippet, $linkContext, $pageText)
+                    $linkedScore = Get-WebsiteResolutionScore -CompanyName $CompanyName -PersonName $PersonName -Municipality $Municipality -CandidateUrl ([string]$linked.href) -SearchQuery $SearchQuery -Snippet $contextSnippet -Title $linkedTitle -PageText $pageText
+                    $linkedStatus = Convert-WebsiteResolutionScoreToStatus -Score ([int]$linkedScore.Score)
+                    if ($linkedStatus -eq "unknown" -or [string]$linkedScore.Reason -match 'blocked_domain_or_portal') {
+                        continue
+                    }
+
+                    $candidates.Add([pscustomobject]@{
+                        company_name  = $CompanyName
+                        person_name   = $PersonName
+                        municipality  = $Municipality
+                        search_query  = $SearchQuery
+                        search_engine = $SearchEngine
+                        candidate_url = [string]$linked.href
+                        title         = $linkedTitle
+                        snippet       = $contextSnippet
+                        score         = [int]$linkedScore.Score
+                        score_reason  = [string]$linkedScore.Reason
+                        status        = $linkedStatus
+                        evidence_type = "linked_from_evidence_page"
+                    })
+                }
+            }
+        }
+    }
+
+    return $candidates.ToArray()
+}
+
+function Get-HtmlTitleFromHtml {
+    param([string]$Html)
+
+    if ([string]::IsNullOrWhiteSpace($Html)) {
+        return ""
+    }
+
+    $titleMatch = [regex]::Match($Html, '<title[^>]*>(.*?)</title>', [System.Text.RegularExpressions.RegexOptions]::IgnoreCase -bor [System.Text.RegularExpressions.RegexOptions]::Singleline)
+    if (-not $titleMatch.Success) {
+        return ""
+    }
+
+    $title = [System.Net.WebUtility]::HtmlDecode($titleMatch.Groups[1].Value)
+    return ($title -replace '\s+', ' ').Trim()
+}
+
+function Convert-HtmlToPlainText {
+    param([string]$Html)
+
+    if ([string]::IsNullOrWhiteSpace($Html)) {
+        return ""
+    }
+
+    $text = $Html -replace '(?is)<script.*?</script>', ' '
+    $text = $text -replace '(?is)<style.*?</style>', ' '
+    $text = $text -replace '(?is)<[^>]+>', ' '
+    $text = [System.Net.WebUtility]::HtmlDecode($text)
+    return ($text -replace '\s+', ' ').Trim()
+}
+
+function Get-CorporateEntityMentionCount {
+    param([string]$Text)
+
+    if ([string]::IsNullOrWhiteSpace($Text)) {
+        return 0
+    }
+
+    $count = 0
+    foreach ($pattern in @(
+            '[^ \r\n\t|｜]{1,40}株式会社',
+            '[^ \r\n\t|｜]{1,40}有限会社',
+            '[^ \r\n\t|｜]{1,40}合同会社',
+            '株式会社[^ \r\n\t|｜]{1,40}',
+            '有限会社[^ \r\n\t|｜]{1,40}',
+            '合同会社[^ \r\n\t|｜]{1,40}',
+            '司法書士法人[^ \r\n\t|｜]{1,40}',
+            '弁護士法人[^ \r\n\t|｜]{1,40}',
+            '医療法人[^ \r\n\t|｜]{1,40}',
+            '学校法人[^ \r\n\t|｜]{1,40}',
+            '税理士法人[^ \r\n\t|｜]{1,40}'
+        )) {
+        $count += @([regex]::Matches($Text, $pattern)).Count
+    }
+
+    return $count
+}
+
+function Test-RecognizedMemberRosterPage {
+    param(
+        [string]$Html,
+        [string]$Text,
+        [string]$Title,
+        [string]$SourceType,
+        [string]$SourceUrl,
+        [object[]]$StructuredRows
+    )
+
+    $structuredCount = @($StructuredRows).Count
+    if ($structuredCount -gt 0) {
+        return [pscustomobject]@{
+            Recognized = $true
+            Reason     = "structured_member_table"
+        }
+    }
+
+    $combined = ("{0} {1}" -f [string]$Title, [string]$SourceUrl)
+    $hasRosterCue = $combined -match '会員紹介|会員名簿|会員一覧|member/?list|memberlist|members?'
+    $hasCompanyFieldCue = $Text -match '勤務先|事業所名|企業名|会社名'
+    $workplaceCueCount = @([regex]::Matches($Text, '勤務先[:：]')).Count
+    $corporateMentionCount = Get-CorporateEntityMentionCount -Text $Text
+
+    switch ($SourceType) {
+        "chamber_member_directory" {
+            if ($hasCompanyFieldCue -and $workplaceCueCount -ge 3) {
+                return [pscustomobject]@{
+                    Recognized = $true
+                    Reason     = "member_directory_workplace_fields"
+                }
+            }
+
+            if ($hasRosterCue -and ($hasCompanyFieldCue -or $corporateMentionCount -ge 5)) {
+                return [pscustomobject]@{
+                    Recognized = $true
+                    Reason     = "member_directory_roster_cues"
+                }
+            }
+        }
+        "jc_member_list" {
+            if ($hasCompanyFieldCue -and $workplaceCueCount -ge 3) {
+                return [pscustomobject]@{
+                    Recognized = $true
+                    Reason     = "jc_member_workplace_fields"
+                }
+            }
+
+            if ($hasRosterCue -and $corporateMentionCount -ge 5) {
+                return [pscustomobject]@{
+                    Recognized = $true
+                    Reason     = "jc_member_roster_cues"
+                }
+            }
+        }
+        default {
+            if ($hasRosterCue -and ($hasCompanyFieldCue -or $corporateMentionCount -ge 5)) {
+                return [pscustomobject]@{
+                    Recognized = $true
+                    Reason     = "roster_cues_with_company_signals"
+                }
+            }
+        }
+    }
+
+    return [pscustomobject]@{
+        Recognized = $false
+        Reason     = "no_member_roster_signals"
+    }
+}
+
+function Convert-HtmlToMeaningfulLines {
+    param([string]$Html)
+
+    if ([string]::IsNullOrWhiteSpace($Html)) {
+        return @()
+    }
+
+    $text = $Html -replace '(?is)<script.*?</script>', ' '
+    $text = $text -replace '(?is)<style.*?</style>', ' '
+    $text = $text -replace '(?i)<br\s*/?>', "`n"
+    $text = $text -replace '(?i)</?(div|section|article|li|ul|ol|p|h[1-6]|tr|td|th|dl|dt|dd)[^>]*>', "`n"
+    $text = $text -replace '(?is)<[^>]+>', ' '
+    $text = [System.Net.WebUtility]::HtmlDecode($text)
+
+    $lines = New-Object System.Collections.Generic.List[string]
+    foreach ($line in @($text -split "(`r`n|`n|`r)")) {
+        $normalized = ($line -replace '\s+', ' ').Trim()
+        if ([string]::IsNullOrWhiteSpace($normalized)) {
+            continue
+        }
+        $lines.Add($normalized)
+    }
+
+    return @($lines)
+}
+
+function Test-PersonNameLike {
+    param([string]$Value)
+
+    if ([string]::IsNullOrWhiteSpace($Value)) {
+        return $false
+    }
+
+    $trimmed = ($Value -replace '\s+', ' ').Trim()
+    if ($trimmed.Length -lt 2 -or $trimmed.Length -gt 20) {
+        return $false
+    }
+
+    if ($trimmed -match '^(勤務先|会社名|企業名|事業所名|業種|役職|氏名|名前|会員名|会員紹介|会員一覧|会員名簿|入会案内|お問い合わせ|総合トップページ|HOME|TOP|あ|い|う|え|お|か|き|く|け|こ|さ|し|す|せ|そ|た|ち|つ|て|と|な|に|ぬ|ね|の|は|ひ|ふ|へ|ほ|ま|み|む|め|も|や|ゆ|よ|ら|り|る|れ|ろ|わ)$') {
+        return $false
+    }
+
+    if ($trimmed -match '(株式会社|有限会社|合同会社|商工会議所|青年会議所|ロータリー|ライオンズ|協議会|同友会|公式|ホームページ|http|https)') {
+        return $false
+    }
+
+    return ($trimmed -match '^[一-龠々ぁ-んァ-ヶA-Za-z]+(?:\s+[一-龠々ぁ-んァ-ヶA-Za-z]+)?$')
+}
+
+function Get-LabeledMemberCompaniesFromHtml {
+    param(
+        [string]$Html,
+        [string]$SourceType
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Html)) {
+        return @()
+    }
+
+    if ($SourceType -ne "chamber_member_directory" -and $SourceType -ne "jc_member_list" -and $SourceType -ne "association_member_list") {
+        return @()
+    }
+
+    $lines = @(Convert-HtmlToMeaningfulLines -Html $Html)
+    if ($lines.Count -eq 0) {
+        return @()
+    }
+
+    $results = New-Object System.Collections.Generic.List[object]
+    $seen = @{}
+
+    for ($i = 0; $i -lt $lines.Count; $i++) {
+        $line = [string]$lines[$i]
+        $companyName = ""
+
+        if ($line -match '^(勤務先|会社名|企業名|事業所名)\s*[:：]\s*(.+)$') {
+            $companyName = $matches[2].Trim()
+        }
+        elseif ($line -match '^(勤務先|会社名|企業名|事業所名)$' -and ($i + 1) -lt $lines.Count) {
+            $companyName = ([string]$lines[$i + 1]).Trim()
+        }
+
+        if ([string]::IsNullOrWhiteSpace($companyName)) {
+            continue
+        }
+
+        if ($companyName -match '^(勤務先|会社名|企業名|事業所名|業種|役職|氏名|名前|会員名)$') {
+            continue
+        }
+
+        $personName = ""
+        $address = ""
+        $phone = ""
+        $industryText = ""
+        $websiteCandidateUrl = ""
+        for ($lookback = 1; $lookback -le 4; $lookback++) {
+            $candidateIndex = $i - $lookback
+            if ($candidateIndex -lt 0) {
+                break
+            }
+
+            $candidateLine = ([string]$lines[$candidateIndex]).Trim()
+            if ([string]::IsNullOrWhiteSpace($candidateLine)) {
+                continue
+            }
+
+            if ($candidateLine -match '^(氏名|名前|会員名)\s*[:：]\s*(.+)$') {
+                $personName = $matches[2].Trim()
+                break
+            }
+
+            if ($candidateLine -match '^(勤務先|会社名|企業名|事業所名|業種|役職)\s*[:：]') {
+                continue
+            }
+
+            if (Test-PersonNameLike -Value $candidateLine) {
+                $personName = $candidateLine
+                break
+            }
+        }
+
+        for ($lookahead = 0; $lookahead -le 6; $lookahead++) {
+            $candidateIndex = $i + $lookahead
+            if ($candidateIndex -ge $lines.Count) {
+                break
+            }
+
+            $candidateLine = ([string]$lines[$candidateIndex]).Trim()
+            if ([string]::IsNullOrWhiteSpace($candidateLine)) {
+                continue
+            }
+
+            if ([string]::IsNullOrWhiteSpace($address)) {
+                if ($candidateLine -match '^(所在地|住所)\s*[:：]\s*(.+)$') {
+                    $address = $matches[2].Trim()
+                }
+                elseif ($candidateLine -match '^(所在地|住所)$' -and ($candidateIndex + 1) -lt $lines.Count) {
+                    $address = ([string]$lines[$candidateIndex + 1]).Trim()
+                }
+            }
+
+            if ([string]::IsNullOrWhiteSpace($phone)) {
+                if ($candidateLine -match '^(電話番号|電話|TEL)\s*[:：]?\s*(.+)$') {
+                    $phone = $matches[2].Trim()
+                }
+                elseif ($candidateLine -match '(?i)\bTEL\b[:：]?\s*(.+)$') {
+                    $phone = $matches[1].Trim()
+                }
+            }
+
+            if ([string]::IsNullOrWhiteSpace($industryText)) {
+                if ($candidateLine -match '^(業種|事業内容)\s*[:：]\s*(.+)$') {
+                    $industryText = $matches[2].Trim()
+                }
+                elseif ($candidateLine -match '^(業種|事業内容)$' -and ($candidateIndex + 1) -lt $lines.Count) {
+                    $industryText = ([string]$lines[$candidateIndex + 1]).Trim()
+                }
+            }
+
+            if ([string]::IsNullOrWhiteSpace($websiteCandidateUrl)) {
+                if ($candidateLine -match '(?i)https?://[^\s]+') {
+                    $websiteCandidateUrl = $matches[0].Trim()
+                }
+            }
+        }
+
+        $industryParts = Split-IndustryText -IndustryText $industryText
+
+        $titleSnapshot = if ([string]::IsNullOrWhiteSpace($personName)) {
+            $companyName
+        }
+        else {
+            '{0} | {1}' -f $personName, $companyName
+        }
+
+        $dedupeKey = "{0}|{1}" -f $personName, $companyName
+        if ($seen.ContainsKey($dedupeKey)) {
+            continue
+        }
+        $seen[$dedupeKey] = $true
+
+        $results.Add([pscustomobject]@{
+            company_name          = $companyName
+            person_name           = $personName
+            address               = $address
+            phone                 = $phone
+            industry1             = $industryParts.industry1
+            industry2             = $industryParts.industry2
+            website_candidate_url = $websiteCandidateUrl
+            title_snapshot        = $titleSnapshot
+        })
+    }
+
+    return @($results | Sort-Object person_name, company_name -Unique)
+}
+
 function Get-StructuredMemberCompaniesFromHtml {
     param(
         [string]$Html,
@@ -2270,6 +3320,7 @@ function Get-StructuredMemberCompaniesFromHtml {
 
             $results.Add([pscustomobject]@{
                 company_name          = $companyName
+                person_name           = ""
                 website_candidate_url = $websiteCandidateUrl
                 title_snapshot        = $companyName
             })
@@ -2303,9 +3354,10 @@ function Find-WebsiteCandidateBySearch {
 
     foreach ($query in $queries) {
         $searchUrl = "https://www.bing.com/search?q={0}" -f [System.Uri]::EscapeDataString($query)
-        try {
-            $response = Invoke-WebRequest -Uri $searchUrl -UseBasicParsing -TimeoutSec 8
-        }
+    try {
+        Start-Sleep -Milliseconds 250
+        $response = Invoke-WebRequest -Uri $searchUrl -UseBasicParsing -TimeoutSec 8 -Headers (Get-DefaultHttpHeaders)
+    }
         catch {
             Write-LogEntry -Level "warning" -Message "Failed to search company website candidate: $query" -Path $LogFile
             continue
@@ -2345,6 +3397,382 @@ function Find-WebsiteCandidateBySearch {
     return ""
 }
 
+function Get-NormalizedComparisonText {
+    param([string]$Value)
+
+    if ([string]::IsNullOrWhiteSpace($Value)) {
+        return ""
+    }
+
+    $normalized = Normalize-CompanyName -Name $Value
+    if ([string]::IsNullOrWhiteSpace($normalized)) {
+        $normalized = ($Value -replace '\s+', '').Trim()
+    }
+
+    return $normalized.ToLowerInvariant()
+}
+
+function Test-TextContainsCompanyToken {
+    param(
+        [string]$Needle,
+        [string]$Haystack
+    )
+
+    $normalizedNeedle = Get-NormalizedComparisonText -Value $Needle
+    $normalizedHaystack = Get-NormalizedComparisonText -Value $Haystack
+
+    if ([string]::IsNullOrWhiteSpace($normalizedNeedle) -or [string]::IsNullOrWhiteSpace($normalizedHaystack)) {
+        return $false
+    }
+
+    return $normalizedHaystack.Contains($normalizedNeedle)
+}
+
+function Get-WebsiteResolutionScore {
+    param(
+        [string]$CompanyName,
+        [string]$PersonName,
+        [string]$Municipality,
+        [string]$CandidateUrl,
+        [string]$SearchQuery,
+        [string]$Snippet,
+        [string]$Title,
+        [string]$PageText
+    )
+
+    $score = 0
+    $reasons = New-Object System.Collections.Generic.List[string]
+    $combined = ("{0} {1} {2} {3}" -f $Title, $Snippet, $PageText, $CandidateUrl)
+    $candidateHost = ""
+    $hostToken = ""
+    try {
+        $candidateHost = ([System.Uri]$CandidateUrl).Host.ToLowerInvariant()
+        $hostToken = ($candidateHost -replace '^www\.', '' -replace '\..*$', '')
+    }
+    catch {
+        $candidateHost = ""
+        $hostToken = ""
+    }
+
+    if (Test-TextContainsCompanyToken -Needle $CompanyName -Haystack $Title) {
+        $score += 6
+        $reasons.Add("title_company_match")
+    }
+
+    if (Test-TextContainsCompanyToken -Needle $CompanyName -Haystack $Snippet) {
+        $score += 4
+        $reasons.Add("snippet_company_match")
+    }
+
+    if (Test-TextContainsCompanyToken -Needle $CompanyName -Haystack $PageText) {
+        $score += 6
+        $reasons.Add("page_company_match")
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($hostToken) -and (Test-TextContainsCompanyToken -Needle $CompanyName -Haystack $hostToken)) {
+        $score += 5
+        $reasons.Add("host_company_match")
+    }
+
+    if ([string]::IsNullOrWhiteSpace($Title)) {
+        $score -= 4
+        $reasons.Add("missing_title")
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($Municipality) -and $combined -match [regex]::Escape($Municipality)) {
+        $score += 2
+        $reasons.Add("municipality_match")
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($PersonName) -and $combined -match [regex]::Escape($PersonName)) {
+        $score += 3
+        $reasons.Add("person_match")
+    }
+
+    if ($combined -match '会社概要|企業情報|事業内容|アクセス|所在地|住所|お問い合わせ|Contact|PROFILE|COMPANY') {
+        $score += 2
+        $reasons.Add("corporate_page_signal")
+    }
+
+    if ($PageText -match '(0\d{1,4}-\d{1,4}-\d{3,4})') {
+        $score += 2
+        $reasons.Add("phone_present")
+    }
+
+    if ($PageText -match '(〒\d{3}-\d{4}|北海道|東京都|(?:京都|大阪)府|.{2,4}県.{1,20}(市|区|町|村))') {
+        $score += 2
+        $reasons.Add("address_present")
+    }
+
+    if ($SearchQuery -match '公式') {
+        $score += 1
+        $reasons.Add("official_query")
+    }
+
+    foreach ($pattern in @(
+            'facebook|instagram|x\.com|twitter\.com|tiktok\.com|youtube\.com|line\.me',
+            'mapion|maps\.google|google\.com/maps|hotpepper|ekiten|jalan|rakuten|itp\.ne\.jp|navitime|nta\.co\.jp|estate\.sesh\.jp|ikyu\.com|booking\.com|travel',
+            'wantedly|green-japan|rikunabi|mynavi|en-gage|engage|求人',
+            'wikipedia|note\.com|ameblo|fc2|blog|medium\.com|name-power\.net|jitenon\.jp|autoreserve\.com|16fan\.com|precious\.jp|chiebukuro\.yahoo\.co\.jp',
+            'jcci\.or\.jp|yeg\.jp|rotary\.org|lionsclubs\.org|doyu\.jp|go\.microsoft\.com|support\.microsoft\.com|athome\.co\.jp|homes\.co\.jp|kensetumap\.com|houjin\.info|bankdb\.jp|info\.gbiz\.go\.jp|prtimes\.jp|atpress\.ne\.jp'
+        )) {
+        if ($CandidateUrl -match $pattern) {
+            $score -= 8
+            $reasons.Add("blocked_domain_or_portal")
+            break
+        }
+    }
+
+    if ($CandidateUrl -match '/news/|/columns?/|/column/|/campaign/|campaign\.|question_detail|/forum/|/category/' -or
+        $combined -match 'ニュース|お知らせ|例会報告|活動報告|イベント|ブログ|記事|一覧|コラム|特集|キャンペーン') {
+        $score -= 4
+        $reasons.Add("article_or_listing_context")
+    }
+
+    if ($combined -match '商工会議所|青年会議所|ロータリー|ライオンズクラブ|同友会|協議会') {
+        $score -= 3
+        $reasons.Add("association_context")
+    }
+
+    return [pscustomobject]@{
+        Score  = $score
+        Reason = ($reasons -join ",")
+    }
+}
+
+function Test-LikelyOfficialWebsiteResult {
+    param(
+        [string]$CompanyName,
+        [string]$Municipality,
+        [string]$CandidateUrl,
+        [string]$Title,
+        [string]$Snippet,
+        [int]$Rank
+    )
+
+    if ([string]::IsNullOrWhiteSpace($CandidateUrl)) {
+        return $null
+    }
+
+    if ($CandidateUrl -match 'zhihu\.com|baidu\.com|hellowork|namedic\.jp|minkan\.co\.jp|wantedly|green-japan|rikunabi|mynavi|en-gage|engage|go\.microsoft\.com|support\.microsoft\.com|chiebukuro\.yahoo\.co\.jp|name-power\.net|jitenon\.jp|precious\.jp|16fan\.com|autoreserve\.com|service\.ntt-east\.co\.jp/columns|finance\.yahoo\.co\.jp|map\.yahoo\.co\.jp|tabelog\.com|hotpepper\.jp|rakuten\.co\.jp|wikipedia\.org|weblio\.jp|stackoverflow\.com|/news/|campaign\.|/campaign/|question_detail|/forum/|/category/') {
+        return $null
+    }
+
+    $candidateHostName = ""
+    try {
+        $candidateHostName = ([System.Uri]$CandidateUrl).Host.ToLowerInvariant()
+    }
+    catch {
+        $candidateHostName = ""
+    }
+
+    $searchCompanyName = Get-SearchCompanyName -Name $CompanyName
+    $hostToken = ($candidateHostName -replace '^www\.', '' -replace '\..*$', '')
+    $hasTitleMatch = Test-TextContainsCompanyToken -Needle $searchCompanyName -Haystack $Title
+    $hasHostMatch = Test-TextContainsCompanyToken -Needle $searchCompanyName -Haystack $hostToken
+    $hasSnippetMatch = Test-TextContainsCompanyToken -Needle $searchCompanyName -Haystack $Snippet
+    $hasMunicipality = -not [string]::IsNullOrWhiteSpace($Municipality) -and (("{0} {1}" -f $Title, $Snippet) -match [regex]::Escape($Municipality))
+    $hasJapanDomain = $candidateHostName -match '\.jp$'
+
+    if (-not $hasTitleMatch -and -not $hasHostMatch -and -not $hasSnippetMatch) {
+        return $null
+    }
+
+    $status = "official_probable"
+    $score = 8
+    $reason = "ranked_search_top_result"
+
+    if ($Rank -eq 1 -and ($hasTitleMatch -or $hasHostMatch)) {
+        $status = "official_confirmed"
+        $score = 12
+        $reason = "rank1_title_or_host_match"
+    }
+    elseif ($Rank -le 3 -and ($hasTitleMatch -or $hasHostMatch) -and $hasMunicipality) {
+        $status = "official_confirmed"
+        $score = 11
+        $reason = "top3_match_with_area"
+    }
+    elseif ($Rank -le 3 -and ($hasTitleMatch -or $hasHostMatch -or $hasSnippetMatch) -and ($hasMunicipality -or $hasJapanDomain)) {
+        $status = "official_probable"
+        $score = 8
+        $reason = "top3_light_match"
+    }
+    else {
+        return $null
+    }
+
+    return [pscustomobject]@{
+        Status = $status
+        Score  = $score
+        Reason = $reason
+    }
+}
+
+function Resolve-WebsiteByTopSearchResult {
+    param(
+        [string]$CompanyName,
+        [string]$PersonName,
+        [string]$Municipality,
+        [string]$LogFile
+    )
+
+    if ([string]::IsNullOrWhiteSpace($CompanyName)) {
+        return $null
+    }
+
+    $searchCompanyName = Get-SearchCompanyName -Name $CompanyName
+    $candidatePool = New-Object System.Collections.Generic.List[object]
+    $seen = @{}
+
+    foreach ($query in @(Get-WebsiteSearchQueries -CompanyName $searchCompanyName -Municipality $Municipality -PersonName $PersonName)) {
+        foreach ($engine in @("yahoojapan", "bing")) {
+            $rank = 0
+            foreach ($link in @(Invoke-SearchResultFetch -Engine $engine -Query $query -LogFile $LogFile)) {
+                $url = Resolve-SearchResultUrl -Href ([string]$link.href)
+                if ([string]::IsNullOrWhiteSpace($url)) {
+                    continue
+                }
+
+                $rank += 1
+                if ($rank -gt 8) {
+                    break
+                }
+
+                foreach ($candidate in @(Get-WebsiteCandidatesFromSourceResult -CompanyName $searchCompanyName -PersonName $PersonName -Municipality $Municipality -SearchQuery ([string]$link.search_query) -SearchEngine ([string]$link.engine) -ResultUrl $url -ResultTitle ([string]$link.title) -ResultSnippet ([string]$link.snippet) -LogFile $LogFile)) {
+                    $key = ("{0}|{1}" -f ([string]$candidate.candidate_url).TrimEnd('/'), [string]$candidate.status)
+                    if ($seen.ContainsKey($key)) {
+                        continue
+                    }
+
+                    $seen[$key] = $true
+                    $candidatePool.Add($candidate)
+                }
+            }
+        }
+    }
+
+    $ordered = @(
+        $candidatePool |
+        Where-Object { $_.status -in @("official_confirmed", "official_probable") } |
+        Sort-Object @{
+            Expression = {
+                switch ([string]$_.status) {
+                    "official_confirmed" { 0; break }
+                    "official_probable" { 1; break }
+                    default { 2 }
+                }
+            }
+        }, @{
+            Expression = { -[int]$_.score }
+        }, @{
+            Expression = {
+                if ([string]$_.evidence_type -eq "linked_from_evidence_page") { 0 } else { 1 }
+            }
+        }, candidate_url -Unique
+    )
+
+    if ($ordered.Count -gt 0) {
+        return $ordered[0]
+    }
+
+    return $null
+}
+
+function Invoke-ResolveCompanyWebsites {
+    param(
+        [string]$MembersFile,
+        [string]$CandidatesOutputFile,
+        [string]$OutputFile,
+        [int]$TopCount,
+        [string]$LogFile
+    )
+
+    $memberRows = @()
+    if ((Test-Path $MembersFile) -and ((Get-Item $MembersFile).Length -gt 3)) {
+        $memberRows = @(Import-Csv -Path $MembersFile)
+    }
+
+    $candidateRows = New-Object System.Collections.Generic.List[object]
+    $resolvedRows = New-Object System.Collections.Generic.List[object]
+
+    foreach ($row in $memberRows) {
+        $existingWebsite = [string]$row.website_candidate_url
+        $status = "unknown"
+        $resolvedWebsite = ""
+        $resolutionReason = ""
+        $resolutionScore = 0
+
+        $bestCandidate = $null
+        if (-not [string]::IsNullOrWhiteSpace($existingWebsite)) {
+            $title = Get-WebPageTitle -Url $existingWebsite -LogFile $LogFile
+            $candidateStatus = "official_probable"
+            $candidateReason = "member_page_direct_link"
+            $candidateScore = 8
+            if (Test-TextContainsCompanyToken -Needle ([string]$row.company_name) -Haystack $title) {
+                $candidateStatus = "official_confirmed"
+                $candidateReason = "member_page_direct_link_title_match"
+                $candidateScore = 12
+            }
+
+            $bestCandidate = [pscustomobject]@{
+                company_name  = [string]$row.company_name
+                person_name   = [string]$row.person_name
+                municipality  = [string]$row.municipality
+                search_query  = "member_page_direct_link"
+                candidate_url = $existingWebsite
+                title         = $title
+                snippet       = ""
+                score         = $candidateScore
+                score_reason  = $candidateReason
+                status        = $candidateStatus
+            }
+        }
+        else {
+            $bestCandidate = Resolve-WebsiteByTopSearchResult -CompanyName ([string]$row.company_name) -PersonName ([string]$row.person_name) -Municipality ([string]$row.municipality) -LogFile $LogFile
+        }
+
+        if ($null -ne $bestCandidate) {
+            $status = [string]$bestCandidate.status
+            $resolvedWebsite = [string]$bestCandidate.candidate_url
+            $resolutionReason = [string]$bestCandidate.score_reason
+            $resolutionScore = [int]$bestCandidate.score
+
+            $candidateRows.Add([pscustomobject]@{
+                company_name         = [string]$bestCandidate.company_name
+                person_name          = [string]$bestCandidate.person_name
+                municipality         = [string]$bestCandidate.municipality
+                search_query         = [string]$bestCandidate.search_query
+                search_engine        = [string]$bestCandidate.search_engine
+                candidate_url        = [string]$bestCandidate.candidate_url
+                title                = [string]$bestCandidate.title
+                snippet              = [string]$bestCandidate.snippet
+                score                = [int]$bestCandidate.score
+                score_reason         = [string]$bestCandidate.score_reason
+                selected_final       = "true"
+                resolution_status    = $status
+            })
+        }
+
+        $resolvedRows.Add([pscustomobject]@{
+            company_name               = [string]$row.company_name
+            person_name                = [string]$row.person_name
+            municipality               = [string]$row.municipality
+            source_org                 = [string]$row.source_org
+            source_type                = [string]$row.source_type
+            source_url                 = [string]$row.source_url
+            website_candidate_url      = $resolvedWebsite
+            title_snapshot             = [string]$row.title_snapshot
+            website_resolution_status  = $status
+            website_resolution_score   = $resolutionScore
+            website_resolution_reason  = $resolutionReason
+        })
+    }
+
+    Write-CsvBom -Rows @($candidateRows | Sort-Object municipality, company_name, @{ Expression = { [int]$_.score }; Descending = $true }, candidate_url) -Path $CandidatesOutputFile
+    Write-CsvBom -Rows @($resolvedRows | Sort-Object municipality, company_name) -Path $OutputFile
+    Write-LogEntry -Level "info" -Message "resolve-company-websites completed: members=$($resolvedRows.Count) candidates=$($candidateRows.Count)" -Path $LogFile
+}
+
 function Invoke-ExtractMemberCandidates {
     param(
         [string]$WorksetFile,
@@ -2356,6 +3784,7 @@ function Invoke-ExtractMemberCandidates {
     $candidates = New-Object System.Collections.Generic.List[object]
     $seenKeys = @{}
     $successfulSourceFetchCount = 0
+    $recognizedSourceCount = 0
 
     foreach ($source in $worksetRows) {
         try {
@@ -2367,20 +3796,26 @@ function Invoke-ExtractMemberCandidates {
             continue
         }
 
-        $structuredRows = @(Get-StructuredMemberCompaniesFromHtml -Html ([string]$response.Content) -SourceType ([string]$source.source_type) -BaseUrl ([string]$source.source_url))
-        foreach ($structuredRow in $structuredRows) {
+        $sourceHtml = [string]$response.Content
+        $structuredRows = @(Get-StructuredMemberCompaniesFromHtml -Html $sourceHtml -SourceType ([string]$source.source_type) -BaseUrl ([string]$source.source_url))
+        $labeledRows = @(Get-LabeledMemberCompaniesFromHtml -Html $sourceHtml -SourceType ([string]$source.source_type))
+        $memberRows = @($structuredRows + $labeledRows)
+        $sourceTitle = Get-HtmlTitleFromHtml -Html $sourceHtml
+        $sourceText = Convert-HtmlToPlainText -Html $sourceHtml
+        $recognition = Test-RecognizedMemberRosterPage -Html $sourceHtml -Text $sourceText -Title $sourceTitle -SourceType ([string]$source.source_type) -SourceUrl ([string]$source.source_url) -StructuredRows $memberRows
+        if (-not $recognition.Recognized) {
+            Write-LogEntry -Level "info" -Message "Skipped non-roster source: org=$($source.source_org) type=$($source.source_type) url=$($source.source_url) reason=$($recognition.Reason)" -Path $LogFile
+            continue
+        }
+        $recognizedSourceCount += 1
+
+        foreach ($structuredRow in $memberRows) {
             $normalizedStructuredName = Get-NormalizedMemberCompanyName -CompanyName $structuredRow.company_name -TitleSnapshot $structuredRow.title_snapshot -CandidateUrl ([string]$structuredRow.website_candidate_url) -Municipality $source.municipality -SourceType $source.source_type
             if (-not (Test-NormalizedMemberCandidate -NormalizedName $normalizedStructuredName -TitleSnapshot $structuredRow.title_snapshot -CandidateUrl ([string]$structuredRow.website_candidate_url) -Municipality $source.municipality -SourceType $source.source_type)) {
                 continue
             }
 
             $websiteCandidate = [string]$structuredRow.website_candidate_url
-            if ([string]::IsNullOrWhiteSpace($websiteCandidate)) {
-                $websiteCandidate = Find-WebsiteCandidateBySearch -CompanyName $normalizedStructuredName -Municipality $source.municipality -LogFile $LogFile
-            }
-            if ([string]::IsNullOrWhiteSpace($websiteCandidate)) {
-                continue
-            }
 
             $dedupeKey = "{0}|{1}|{2}" -f $source.municipality, $normalizedStructuredName, $websiteCandidate
             if ($seenKeys.ContainsKey($dedupeKey)) {
@@ -2390,6 +3825,7 @@ function Invoke-ExtractMemberCandidates {
 
             $candidates.Add([pscustomobject]@{
                 company_name          = $normalizedStructuredName
+                person_name           = [string]$structuredRow.person_name
                 municipality          = $source.municipality
                 source_org            = $source.source_org
                 source_type           = $source.source_type
@@ -2397,6 +3833,10 @@ function Invoke-ExtractMemberCandidates {
                 website_candidate_url = $websiteCandidate
                 title_snapshot        = $structuredRow.title_snapshot
             })
+        }
+
+        if ($memberRows.Count -gt 0) {
+            continue
         }
 
         foreach ($link in @($response.Links)) {
@@ -2424,6 +3864,7 @@ function Invoke-ExtractMemberCandidates {
 
             $candidates.Add([pscustomobject]@{
                 company_name          = $companyName
+                person_name           = ""
                 municipality          = $source.municipality
                 source_org            = $source.source_org
                 source_type           = $source.source_type
@@ -2452,7 +3893,7 @@ function Invoke-ExtractMemberCandidates {
     if ($outputRows.Count -gt 0) {
         Save-LastGoodCsvCache -SourcePath $OutputFile
     }
-    Write-LogEntry -Level "info" -Message "extract-member-candidates completed: candidates=$($outputRows.Count)" -Path $LogFile
+    Write-LogEntry -Level "info" -Message "extract-member-candidates completed: candidates=$($outputRows.Count) recognized_sources=$recognizedSourceCount fetched_sources=$successfulSourceFetchCount" -Path $LogFile
 }
 
 function Get-NormalizedMemberCompanyName {
@@ -2574,7 +4015,10 @@ function Get-NormalizedMemberCompanyName {
         return ""
     }
 
-    return ($value -replace '\s+', ' ').Trim()
+    $value = ($value -replace '\s+', ' ').Trim()
+    $value = Get-SearchCompanyName -Name $value
+    $value = Convert-ToCanonicalCompanyDisplayName -Name $value
+    return $value
 }
 
 function Test-NormalizedMemberCandidate {
@@ -2681,6 +4125,7 @@ function Invoke-NormalizeMemberCandidates {
 
         $normalizedRows.Add([pscustomobject]@{
             company_name          = $normalizedName
+            person_name           = [string]$row.person_name
             municipality          = $row.municipality
             source_org            = $row.source_org
             source_type           = $row.source_type
@@ -2799,21 +4244,34 @@ function Invoke-RunWebPipeline {
         [string]$WorksetFile,
         [string]$CandidatesFile,
         [string]$NormalizedMembersFile,
+        [string]$ResolvedMembersFile,
+        [string]$WebsiteResolutionCandidatesFile,
         [string]$DetailsFile,
         [string]$CompanyMasterFile,
         [string]$AllOutputFile,
         [string]$UsableOutputFile,
         [string]$ReportOutputFile,
+        [int]$TopWebsiteCandidateCount,
         [string]$LogFile
     )
 
     Invoke-BuildSourceWorkset -ResolvedFile $ResolvedFile -RegistryFile $RegistryFile -OutputFile $WorksetFile -LogFile $LogFile
     Invoke-ExtractMemberCandidates -WorksetFile $WorksetFile -OutputFile $CandidatesFile -LogFile $LogFile
     Invoke-NormalizeMemberCandidates -CandidatesFile $CandidatesFile -OutputFile $NormalizedMembersFile -LogFile $LogFile
-    Invoke-ExtractCompanyDetails -MembersFile $NormalizedMembersFile -OutputFile $DetailsFile -LogFile $LogFile
+
+    $normalizedRows = @()
+    if (Test-Path $NormalizedMembersFile) {
+        $normalizedRows = @(Import-Csv -Path $NormalizedMembersFile | Sort-Object municipality, company_name, person_name)
+    }
+
+    # The default member-directory flow uses only fields explicitly published on the member page.
+    Write-CsvBom -Rows $normalizedRows -Path $ResolvedMembersFile
+    Write-CsvBom -Rows @() -Path $WebsiteResolutionCandidatesFile
+    Write-CsvBom -Rows @() -Path $DetailsFile
+
     Invoke-BuildCompanyMasterCommand -ResolvedFile $ResolvedFile -MembersFile $NormalizedMembersFile -DetailsFile $DetailsFile -ScoringFile $scoringFile -OutputFile $CompanyMasterFile -LogFile $LogFile
     Invoke-BuildSalesListFromCompanyMaster -CompanyMasterFile $CompanyMasterFile -AllOutputFile $AllOutputFile -UsableOutputFile $UsableOutputFile -ReportOutputFile $ReportOutputFile -LogFile $LogFile
-    Write-LogEntry -Level "info" -Message "run-web-pipeline completed" -Path $LogFile
+    Write-LogEntry -Level "info" -Message "run-web-pipeline completed without post-extraction supplementation" -Path $LogFile
 }
 
 function Invoke-ReportStatus {
@@ -2863,6 +4321,728 @@ function Invoke-ReportStatus {
     Write-LogEntry -Level "info" -Message "report-status completed" -Path $LogFile
 }
 
+function Get-StructuredMemberCompaniesFromHtml {
+    param(
+        [string]$Html,
+        [string]$SourceType,
+        [string]$BaseUrl
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Html)) {
+        return @()
+    }
+
+    if ($SourceType -ne "chamber_member_directory" -and $SourceType -ne "jc_member_list") {
+        return @()
+    }
+
+    $results = New-Object System.Collections.Generic.List[object]
+    foreach ($tableMatch in [regex]::Matches($Html, '(?is)<table[^>]*>(.*?)</table>')) {
+        $tableHtml = $tableMatch.Groups[1].Value
+        $rows = @([regex]::Matches($tableHtml, '(?is)<tr[^>]*>(.*?)</tr>'))
+        if ($rows.Count -lt 2) {
+            continue
+        }
+
+        $headerCells = @([regex]::Matches($rows[0].Groups[1].Value, '(?is)<t[hd][^>]*>(.*?)</t[hd]>') | ForEach-Object {
+                ([System.Net.WebUtility]::HtmlDecode(($_.Groups[1].Value -replace '<[^>]+>', ' ')) -replace '\s+', ' ').Trim()
+            })
+        if ($headerCells.Count -eq 0) {
+            continue
+        }
+
+        $companyIndex = -1
+        $personIndex = -1
+        $addressIndex = -1
+        $phoneIndex = -1
+        $industryIndex = -1
+        $urlIndex = -1
+
+        for ($i = 0; $i -lt $headerCells.Count; $i++) {
+            $headerCell = [string]$headerCells[$i]
+            if ($companyIndex -lt 0 -and $headerCell -match '事業所名|企業名|会社名') { $companyIndex = $i }
+            if ($personIndex -lt 0 -and $headerCell -match '氏名|名前|会員名|代表者') { $personIndex = $i }
+            if ($addressIndex -lt 0 -and $headerCell -match '所在地|住所') { $addressIndex = $i }
+            if ($phoneIndex -lt 0 -and $headerCell -match '電話|TEL') { $phoneIndex = $i }
+            if ($industryIndex -lt 0 -and $headerCell -match '業種|事業内容') { $industryIndex = $i }
+            if ($urlIndex -lt 0 -and $headerCell -match 'URL|HP|ホームページ|公式サイト|Web') { $urlIndex = $i }
+        }
+
+        if ($companyIndex -lt 0) {
+            continue
+        }
+
+        for ($rowIndex = 1; $rowIndex -lt $rows.Count; $rowIndex++) {
+            $rowHtml = $rows[$rowIndex].Groups[1].Value
+            $rawCells = @([regex]::Matches($rowHtml, '(?is)<t[hd][^>]*>(.*?)</t[hd]>') | ForEach-Object { $_.Groups[1].Value })
+            $cells = @($rawCells | ForEach-Object {
+                    ([System.Net.WebUtility]::HtmlDecode(($_ -replace '<[^>]+>', ' ')) -replace '\s+', ' ').Trim()
+                })
+            if ($cells.Count -le $companyIndex) {
+                continue
+            }
+
+            $companyName = [string]$cells[$companyIndex]
+            if ([string]::IsNullOrWhiteSpace($companyName)) {
+                continue
+            }
+
+            $personName = $(if ($personIndex -ge 0 -and $cells.Count -gt $personIndex) { [string]$cells[$personIndex] } else { "" })
+            $address = $(if ($addressIndex -ge 0 -and $cells.Count -gt $addressIndex) { [string]$cells[$addressIndex] } else { "" })
+            $phone = $(if ($phoneIndex -ge 0 -and $cells.Count -gt $phoneIndex) { [string]$cells[$phoneIndex] } else { "" })
+            $industryText = $(if ($industryIndex -ge 0 -and $cells.Count -gt $industryIndex) { [string]$cells[$industryIndex] } else { "" })
+            $industryParts = Split-IndustryText -IndustryText $industryText
+
+            $websiteCandidateUrl = ""
+            $rowLinks = New-Object System.Collections.Generic.List[string]
+
+            if ($rawCells.Count -gt $companyIndex) {
+                foreach ($linkMatch in [regex]::Matches([string]$rawCells[$companyIndex], '(?is)<a[^>]+href=["'']([^"'']+)["''][^>]*>')) {
+                    $rowLinks.Add([string]$linkMatch.Groups[1].Value)
+                }
+            }
+            if ($rowLinks.Count -eq 0) {
+                foreach ($linkMatch in [regex]::Matches($rowHtml, '(?is)<a[^>]+href=["'']([^"'']+)["''][^>]*>')) {
+                    $rowLinks.Add([string]$linkMatch.Groups[1].Value)
+                }
+            }
+
+            foreach ($href in $rowLinks) {
+                $absoluteUrl = Resolve-AbsoluteUrl -BaseUrl $BaseUrl -Href $href
+                if (Test-IgnoredCandidateUrl -SourceUrl $BaseUrl -CandidateUrl $absoluteUrl) {
+                    continue
+                }
+
+                try {
+                    $baseHost = ([System.Uri]$BaseUrl).Host.ToLowerInvariant()
+                    $candidateHost = ([System.Uri]$absoluteUrl).Host.ToLowerInvariant()
+                    if ($candidateHost -eq $baseHost) {
+                        continue
+                    }
+                }
+                catch {
+                    continue
+                }
+
+                $websiteCandidateUrl = $absoluteUrl
+                break
+            }
+
+            if ([string]::IsNullOrWhiteSpace($websiteCandidateUrl) -and $urlIndex -ge 0 -and $cells.Count -gt $urlIndex) {
+                $candidateCellText = [string]$cells[$urlIndex]
+                if ($candidateCellText -match '(?i)https?://[^\s]+') {
+                    $websiteCandidateUrl = $matches[0].Trim()
+                }
+            }
+
+            $titleSnapshot = if ([string]::IsNullOrWhiteSpace($personName)) { $companyName } else { '{0} | {1}' -f $personName, $companyName }
+            $results.Add([pscustomobject]@{
+                company_name          = $companyName
+                person_name           = $personName
+                address               = $address
+                phone                 = $phone
+                industry1             = $industryParts.industry1
+                industry2             = $industryParts.industry2
+                website_candidate_url = $websiteCandidateUrl
+                title_snapshot        = $titleSnapshot
+            })
+        }
+    }
+
+    return @($results | Sort-Object company_name, person_name, website_candidate_url -Unique)
+}
+
+function Invoke-ExtractMemberCandidates {
+    param(
+        [string]$WorksetFile,
+        [string]$OutputFile,
+        [string]$LogFile
+    )
+
+    $worksetRows = @(Import-Csv -Path $WorksetFile)
+    $candidates = New-Object System.Collections.Generic.List[object]
+    $seenKeys = @{}
+    $successfulSourceFetchCount = 0
+    $recognizedSourceCount = 0
+
+    foreach ($source in $worksetRows) {
+        try {
+            $response = Invoke-WebRequest -Uri $source.source_url -UseBasicParsing -TimeoutSec 20
+            $successfulSourceFetchCount += 1
+        }
+        catch {
+            Write-LogEntry -Level "warning" -Message "Failed to fetch source page: $($source.source_url)" -Path $LogFile
+            continue
+        }
+
+        $sourceHtml = [string]$response.Content
+        $structuredRows = @(Get-StructuredMemberCompaniesFromHtml -Html $sourceHtml -SourceType ([string]$source.source_type) -BaseUrl ([string]$source.source_url))
+        $labeledRows = @(Get-LabeledMemberCompaniesFromHtml -Html $sourceHtml -SourceType ([string]$source.source_type))
+        $memberRows = @($structuredRows + $labeledRows)
+        $sourceTitle = Get-HtmlTitleFromHtml -Html $sourceHtml
+        $sourceText = Convert-HtmlToPlainText -Html $sourceHtml
+        $recognition = Test-RecognizedMemberRosterPage -Html $sourceHtml -Text $sourceText -Title $sourceTitle -SourceType ([string]$source.source_type) -SourceUrl ([string]$source.source_url) -StructuredRows $memberRows
+        if (-not $recognition.Recognized) {
+            Write-LogEntry -Level "info" -Message "Skipped non-roster source: org=$($source.source_org) type=$($source.source_type) url=$($source.source_url) reason=$($recognition.Reason)" -Path $LogFile
+            continue
+        }
+        $recognizedSourceCount += 1
+
+        foreach ($structuredRow in $memberRows) {
+            $normalizedStructuredName = Get-NormalizedMemberCompanyName -CompanyName $structuredRow.company_name -TitleSnapshot $structuredRow.title_snapshot -CandidateUrl ([string]$structuredRow.website_candidate_url) -Municipality $source.municipality -SourceType $source.source_type
+            if (-not (Test-NormalizedMemberCandidate -NormalizedName $normalizedStructuredName -TitleSnapshot $structuredRow.title_snapshot -CandidateUrl ([string]$structuredRow.website_candidate_url) -Municipality $source.municipality -SourceType $source.source_type)) {
+                continue
+            }
+
+            $websiteCandidate = [string]$structuredRow.website_candidate_url
+            $dedupeKey = "{0}|{1}|{2}" -f $source.municipality, $normalizedStructuredName, $websiteCandidate
+            if ($seenKeys.ContainsKey($dedupeKey)) {
+                continue
+            }
+            $seenKeys[$dedupeKey] = $true
+
+            $candidates.Add([pscustomobject]@{
+                company_name          = $normalizedStructuredName
+                person_name           = [string]$structuredRow.person_name
+                municipality          = [string]$source.municipality
+                source_org            = [string]$source.source_org
+                source_type           = [string]$source.source_type
+                source_url            = [string]$source.source_url
+                address               = [string]$structuredRow.address
+                phone                 = [string]$structuredRow.phone
+                industry1             = [string]$structuredRow.industry1
+                industry2             = [string]$structuredRow.industry2
+                website_candidate_url = $websiteCandidate
+                title_snapshot        = [string]$structuredRow.title_snapshot
+            })
+        }
+
+        if ($memberRows.Count -gt 0) {
+            continue
+        }
+
+        foreach ($link in @($response.Links)) {
+            $hrefProperty = $link.PSObject.Properties["href"]
+            if ($null -eq $hrefProperty) {
+                continue
+            }
+
+            $absoluteUrl = Resolve-AbsoluteUrl -BaseUrl $source.source_url -Href ([string]$hrefProperty.Value)
+            if (Test-IgnoredCandidateUrl -SourceUrl $source.source_url -CandidateUrl $absoluteUrl) {
+                continue
+            }
+
+            $title = Get-WebPageTitle -Url $absoluteUrl -LogFile $LogFile
+            $companyName = Convert-TitleToCompanyName -Title $title -Url $absoluteUrl
+            if ([string]::IsNullOrWhiteSpace($companyName)) {
+                continue
+            }
+
+            $dedupeKey = "{0}|{1}|{2}" -f $source.municipality, $companyName, $absoluteUrl
+            if ($seenKeys.ContainsKey($dedupeKey)) {
+                continue
+            }
+            $seenKeys[$dedupeKey] = $true
+
+            $candidates.Add([pscustomobject]@{
+                company_name          = $companyName
+                person_name           = ""
+                municipality          = [string]$source.municipality
+                source_org            = [string]$source.source_org
+                source_type           = [string]$source.source_type
+                source_url            = [string]$source.source_url
+                address               = ""
+                phone                 = ""
+                industry1             = ""
+                industry2             = ""
+                website_candidate_url = $absoluteUrl
+                title_snapshot        = $title
+            })
+        }
+    }
+
+    $outputRows = @($candidates | Sort-Object municipality, source_org, company_name)
+    Write-CsvBom -Rows $outputRows -Path $OutputFile
+    Write-LogEntry -Level "info" -Message "extract-member-candidates completed: candidates=$($outputRows.Count) recognized_sources=$recognizedSourceCount fetched_sources=$successfulSourceFetchCount" -Path $LogFile
+}
+
+function Invoke-NormalizeMemberCandidates {
+    param(
+        [string]$CandidatesFile,
+        [string]$OutputFile,
+        [string]$LogFile
+    )
+
+    $candidateRows = @(Import-Csv -Path $CandidatesFile)
+    $normalizedRows = New-Object System.Collections.Generic.List[object]
+    $seen = @{}
+
+    foreach ($row in $candidateRows) {
+        $normalizedName = Get-NormalizedMemberCompanyName -CompanyName $row.company_name -TitleSnapshot $row.title_snapshot -CandidateUrl $row.website_candidate_url -Municipality $row.municipality -SourceType $row.source_type
+        if (-not (Test-NormalizedMemberCandidate -NormalizedName $normalizedName -TitleSnapshot $row.title_snapshot -CandidateUrl $row.website_candidate_url -Municipality $row.municipality -SourceType $row.source_type)) {
+            continue
+        }
+
+        $dedupeKey = "{0}|{1}" -f $row.municipality, $normalizedName
+        if ($seen.ContainsKey($dedupeKey)) {
+            continue
+        }
+        $seen[$dedupeKey] = $true
+
+        $normalizedRows.Add([pscustomobject]@{
+            company_name          = $normalizedName
+            person_name           = [string]$row.person_name
+            municipality          = [string]$row.municipality
+            source_org            = [string]$row.source_org
+            source_type           = [string]$row.source_type
+            source_url            = [string]$row.source_url
+            address               = [string]$row.address
+            phone                 = [string]$row.phone
+            industry1             = [string]$row.industry1
+            industry2             = [string]$row.industry2
+            website_candidate_url = [string]$row.website_candidate_url
+            title_snapshot        = [string]$row.title_snapshot
+        })
+    }
+
+    $outputRows = @($normalizedRows | Sort-Object municipality, source_org, company_name)
+    Write-CsvBom -Rows $outputRows -Path $OutputFile
+    Write-LogEntry -Level "info" -Message "normalize-member-candidates completed: companies=$($outputRows.Count)" -Path $LogFile
+}
+
+function Invoke-ResolveCompanyWebsites {
+    param(
+        [string]$MembersFile,
+        [string]$CandidatesOutputFile,
+        [string]$OutputFile,
+        [int]$TopCount,
+        [string]$LogFile
+    )
+
+    $memberRows = @(Import-Csv -Path $MembersFile)
+    $candidateRows = New-Object System.Collections.Generic.List[object]
+    $resolvedRows = New-Object System.Collections.Generic.List[object]
+
+    foreach ($row in $memberRows) {
+        $existingWebsite = [string]$row.website_candidate_url
+        $status = "unknown"
+        $resolvedWebsite = ""
+        $resolutionReason = ""
+        $resolutionScore = 0
+
+        $bestCandidate = $null
+        if (-not [string]::IsNullOrWhiteSpace($existingWebsite)) {
+            $title = Get-WebPageTitle -Url $existingWebsite -LogFile $LogFile
+            $candidateStatus = "official_probable"
+            $candidateReason = "member_page_direct_link"
+            $candidateScore = 8
+            if (Test-TextContainsCompanyToken -Needle ([string]$row.company_name) -Haystack $title) {
+                $candidateStatus = "official_confirmed"
+                $candidateReason = "member_page_direct_link_title_match"
+                $candidateScore = 12
+            }
+
+            $bestCandidate = [pscustomobject]@{
+                company_name  = [string]$row.company_name
+                person_name   = [string]$row.person_name
+                municipality  = [string]$row.municipality
+                search_query  = "member_page_direct_link"
+                candidate_url = $existingWebsite
+                title         = $title
+                snippet       = ""
+                score         = $candidateScore
+                score_reason  = $candidateReason
+                status        = $candidateStatus
+            }
+        }
+        else {
+            $bestCandidate = Resolve-WebsiteByTopSearchResult -CompanyName ([string]$row.company_name) -PersonName ([string]$row.person_name) -Municipality ([string]$row.municipality) -LogFile $LogFile
+        }
+
+        if ($null -ne $bestCandidate) {
+            $status = [string]$bestCandidate.status
+            $resolvedWebsite = [string]$bestCandidate.candidate_url
+            $resolutionReason = [string]$bestCandidate.score_reason
+            $resolutionScore = [int]$bestCandidate.score
+
+            $candidateRows.Add([pscustomobject]@{
+                company_name         = [string]$bestCandidate.company_name
+                person_name          = [string]$bestCandidate.person_name
+                municipality         = [string]$bestCandidate.municipality
+                search_query         = [string]$bestCandidate.search_query
+                search_engine        = [string]$bestCandidate.search_engine
+                candidate_url        = [string]$bestCandidate.candidate_url
+                title                = [string]$bestCandidate.title
+                snippet              = [string]$bestCandidate.snippet
+                score                = [int]$bestCandidate.score
+                score_reason         = [string]$bestCandidate.score_reason
+                selected_final       = "true"
+                resolution_status    = $status
+            })
+        }
+
+        $resolvedRows.Add([pscustomobject]@{
+            company_name               = [string]$row.company_name
+            person_name                = [string]$row.person_name
+            municipality               = [string]$row.municipality
+            source_org                 = [string]$row.source_org
+            source_type                = [string]$row.source_type
+            source_url                 = [string]$row.source_url
+            address                    = [string]$row.address
+            phone                      = [string]$row.phone
+            industry1                  = [string]$row.industry1
+            industry2                  = [string]$row.industry2
+            website_candidate_url      = $resolvedWebsite
+            title_snapshot             = [string]$row.title_snapshot
+            website_resolution_status  = $status
+            website_resolution_score   = $resolutionScore
+            website_resolution_reason  = $resolutionReason
+        })
+    }
+
+    Write-CsvBom -Rows @($candidateRows | Sort-Object municipality, company_name, @{ Expression = { [int]$_.score }; Descending = $true }, candidate_url) -Path $CandidatesOutputFile
+    Write-CsvBom -Rows @($resolvedRows | Sort-Object municipality, company_name) -Path $OutputFile
+    Write-LogEntry -Level "info" -Message "resolve-company-websites completed: members=$($resolvedRows.Count) candidates=$($candidateRows.Count)" -Path $LogFile
+}
+
+function Invoke-ExtractCompanyDetails {
+    param(
+        [string]$MembersFile,
+        [string]$OutputFile,
+        [string]$LogFile
+    )
+
+    $memberRows = @(Import-Csv -Path $MembersFile)
+    $detailRows = New-Object System.Collections.Generic.List[object]
+
+    foreach ($row in $memberRows) {
+        $website = [string]$row.website_candidate_url
+        $address = [string]$row.address
+        $phone = [string]$row.phone
+        $contactFormUrl = ""
+
+        if (-not [string]::IsNullOrWhiteSpace($website)) {
+            $page = Get-DecodedWebPage -Url $website -LogFile $LogFile
+            if ($null -ne $page) {
+                $websiteAddress = Find-PostalAddress -Text $page.Text -Html $page.Html
+                $websitePhone = Find-PhoneNumber -Text $page.Text
+                $contactFormUrl = Find-ContactFormUrl -BaseUrl $website -Response $page.Response
+                if (-not [string]::IsNullOrWhiteSpace($websiteAddress)) {
+                    $address = $websiteAddress
+                }
+                if (-not [string]::IsNullOrWhiteSpace($websitePhone)) {
+                    $phone = $websitePhone
+                }
+            }
+        }
+
+        $contactability = 0
+        if (-not [string]::IsNullOrWhiteSpace($phone) -or -not [string]::IsNullOrWhiteSpace($website) -or -not [string]::IsNullOrWhiteSpace($contactFormUrl)) {
+            $contactability = 1
+        }
+
+        $detailRows.Add([pscustomobject]@{
+            company_name      = [string]$row.company_name
+            municipality      = [string]$row.municipality
+            address           = $address
+            phone             = $phone
+            website           = $website
+            contact_form_url  = $contactFormUrl
+            detail_source_url = $website
+            industry1         = [string]$row.industry1
+            industry2         = [string]$row.industry2
+            industry_fit      = 0
+            local_focus       = 1
+            network_affinity  = 1
+            contactability    = $contactability
+        })
+    }
+
+    $outputRows = @($detailRows | Sort-Object municipality, company_name)
+    Write-CsvBom -Rows $outputRows -Path $OutputFile
+    Write-LogEntry -Level "info" -Message "extract-company-details completed: rows=$($outputRows.Count)" -Path $LogFile
+}
+
+function Merge-CandidatePair {
+    param(
+        [pscustomobject]$Primary,
+        [pscustomobject]$Secondary
+    )
+
+    $representative = Get-PreferredCandidate -Left $Primary -Right $Secondary
+    $other = $(if ($representative -eq $Primary) { $Secondary } else { $Primary })
+
+    [pscustomobject]@{
+        company_name      = $representative.company_name
+        person_name       = $(if (-not [string]::IsNullOrWhiteSpace($representative.person_name)) { $representative.person_name } else { $other.person_name })
+        municipality      = $representative.municipality
+        address           = $(if (-not [string]::IsNullOrWhiteSpace($representative.address)) { $representative.address } else { $other.address })
+        phone             = $(if (-not [string]::IsNullOrWhiteSpace($representative.phone)) { $representative.phone } else { $other.phone })
+        website           = $(if (-not [string]::IsNullOrWhiteSpace($representative.website)) { $representative.website } else { $other.website })
+        contact_form_url  = $(if (-not [string]::IsNullOrWhiteSpace($representative.contact_form_url)) { $representative.contact_form_url } else { $other.contact_form_url })
+        source_org        = $representative.source_org
+        source_url        = $representative.source_url
+        detail_source_url = $(if (-not [string]::IsNullOrWhiteSpace($representative.detail_source_url)) { $representative.detail_source_url } else { $other.detail_source_url })
+        industry1         = $(if (-not [string]::IsNullOrWhiteSpace($representative.industry1)) { $representative.industry1 } else { $other.industry1 })
+        industry2         = $(if (-not [string]::IsNullOrWhiteSpace($representative.industry2)) { $representative.industry2 } else { $other.industry2 })
+        industry_fit      = [math]::Max([double]$Primary.industry_fit, [double]$Secondary.industry_fit)
+        local_focus       = [math]::Max([double]$Primary.local_focus, [double]$Secondary.local_focus)
+        network_affinity  = [math]::Max([double]$Primary.network_affinity, [double]$Secondary.network_affinity)
+        contactability    = [math]::Max([double]$Primary.contactability, [double]$Secondary.contactability)
+        match_status      = $(if ($Primary.match_status -eq "exact" -or $Secondary.match_status -eq "exact") { "exact" } elseif ($Primary.match_status -eq "ambiguous" -or $Secondary.match_status -eq "ambiguous") { "ambiguous" } else { "missing" })
+        source_count      = ([int]$Primary.source_count + [int]$Secondary.source_count)
+        source_summary    = $(Merge-UniqueSummary -Existing $Primary.source_summary -Additional $Secondary.source_summary)
+    }
+}
+
+function Merge-DetailRows {
+    param([System.Collections.IEnumerable]$Rows)
+
+    $rowList = @($Rows)
+    if ($rowList.Count -eq 0) {
+        return $null
+    }
+
+    $merged = $rowList[0]
+    for ($i = 1; $i -lt $rowList.Count; $i++) {
+        $current = $rowList[$i]
+        if (-not (Test-DuplicateCandidate -Left $merged -Right $current)) {
+            return $null
+        }
+
+        $merged = [pscustomobject]@{
+            company_name      = $(if (-not [string]::IsNullOrWhiteSpace($merged.company_name)) { $merged.company_name } else { $current.company_name })
+            municipality      = $(if (-not [string]::IsNullOrWhiteSpace($merged.municipality)) { $merged.municipality } else { $current.municipality })
+            address           = $(if (-not [string]::IsNullOrWhiteSpace($merged.address)) { $merged.address } else { $current.address })
+            phone             = $(if (-not [string]::IsNullOrWhiteSpace($merged.phone)) { $merged.phone } else { $current.phone })
+            website           = $(if (-not [string]::IsNullOrWhiteSpace($merged.website)) { $merged.website } else { $current.website })
+            contact_form_url  = $(if (-not [string]::IsNullOrWhiteSpace($merged.contact_form_url)) { $merged.contact_form_url } else { $current.contact_form_url })
+            detail_source_url = $(if (-not [string]::IsNullOrWhiteSpace($merged.detail_source_url)) { $merged.detail_source_url } else { $current.detail_source_url })
+            industry1         = $(if (-not [string]::IsNullOrWhiteSpace($merged.industry1)) { $merged.industry1 } else { $current.industry1 })
+            industry2         = $(if (-not [string]::IsNullOrWhiteSpace($merged.industry2)) { $merged.industry2 } else { $current.industry2 })
+            industry_fit      = [math]::Max([double]$merged.industry_fit, [double]$current.industry_fit)
+            local_focus       = [math]::Max([double]$merged.local_focus, [double]$current.local_focus)
+            network_affinity  = [math]::Max([double]$merged.network_affinity, [double]$current.network_affinity)
+            contactability    = [math]::Max([double]$merged.contactability, [double]$current.contactability)
+        }
+    }
+
+    return $merged
+}
+
+function Invoke-BuildCompanyMaster {
+    param(
+        [System.Collections.IEnumerable]$MemberRows,
+        [System.Collections.IEnumerable]$DetailRows,
+        [hashtable]$ScoringConfig,
+        [string]$LogFile
+    )
+
+    $candidateRows = New-Object System.Collections.Generic.List[object]
+
+    foreach ($member in $MemberRows) {
+        $exactMatches = @($DetailRows | Where-Object { $_.company_name -eq $member.company_name -and $_.municipality -eq $member.municipality })
+        $sameNameMatches = @($DetailRows | Where-Object { $_.company_name -eq $member.company_name })
+
+        $matchStatus = "missing"
+        $detail = $null
+
+        if ($exactMatches.Count -eq 1) {
+            $detail = $exactMatches[0]
+            $matchStatus = "exact"
+        }
+        elseif ($exactMatches.Count -gt 1) {
+            $mergedDetail = Merge-DetailRows -Rows $exactMatches
+            if ($null -ne $mergedDetail) {
+                $detail = $mergedDetail
+                $matchStatus = "exact"
+            }
+            else {
+                $matchStatus = "ambiguous"
+            }
+        }
+        elseif ($sameNameMatches.Count -gt 1) {
+            $matchStatus = "ambiguous"
+        }
+
+        $address = [string]$member.address
+        $phone = [string]$member.phone
+        $website = [string]$member.website_candidate_url
+        $contactFormUrl = ""
+        $detailSource = ""
+        $industry1 = [string]$member.industry1
+        $industry2 = [string]$member.industry2
+
+        if ($matchStatus -eq "exact" -and $null -ne $detail) {
+            if (-not [string]::IsNullOrWhiteSpace([string]$detail.address)) { $address = [string]$detail.address }
+            if (-not [string]::IsNullOrWhiteSpace([string]$detail.phone)) { $phone = [string]$detail.phone }
+            if (-not [string]::IsNullOrWhiteSpace([string]$detail.website)) { $website = [string]$detail.website }
+            $contactFormUrl = [string]$detail.contact_form_url
+            $detailSource = [string]$detail.detail_source_url
+            if (-not [string]::IsNullOrWhiteSpace([string]$detail.industry1)) { $industry1 = [string]$detail.industry1 }
+            if (-not [string]::IsNullOrWhiteSpace([string]$detail.industry2)) { $industry2 = [string]$detail.industry2 }
+        }
+
+        $sourceSummary = $member.source_org
+        if (-not [string]::IsNullOrWhiteSpace($member.source_url)) {
+            $sourceSummary = '{0} <{1}>' -f $member.source_org, $member.source_url
+        }
+
+        $candidateRows.Add([pscustomobject]@{
+            company_name          = [string]$member.company_name
+            person_name           = [string]$member.person_name
+            municipality          = [string]$member.municipality
+            location_municipality = Get-MunicipalityFromAddress -Address $address -FallbackMunicipality ([string]$member.municipality)
+            address               = $address
+            phone                 = $phone
+            website               = $website
+            contact_form_url      = $contactFormUrl
+            source_org            = [string]$member.source_org
+            source_url            = [string]$member.source_url
+            detail_source_url     = $detailSource
+            industry1             = $industry1
+            industry2             = $industry2
+            industry_fit          = $(if ($null -ne $detail) { [double]$detail.industry_fit } else { 0 })
+            local_focus           = $(if ($null -ne $detail) { [double]$detail.local_focus } else { 0 })
+            network_affinity      = $(if ($null -ne $detail) { [double]$detail.network_affinity } else { 0 })
+            contactability        = $(if ($null -ne $detail) { [double]$detail.contactability } else { 0 })
+            match_status          = $matchStatus
+            source_count          = 1
+            source_summary        = $sourceSummary
+        })
+    }
+
+    $mergedCandidates = Merge-CandidateRows -Rows $candidateRows
+    $outputRows = New-Object System.Collections.Generic.List[object]
+
+    foreach ($candidate in $mergedCandidates) {
+        $usable = Get-UsableStatus -CompanyName $candidate.company_name -Address $candidate.address -Phone $candidate.phone -Website $candidate.website -MatchStatus $candidate.match_status
+        $score = Get-ScoreResult -Detail $candidate -MatchStatus $candidate.match_status -ScoringConfig $ScoringConfig
+
+        $outputRows.Add([pscustomobject]@{
+            company_name          = $candidate.company_name
+            person_name           = $candidate.person_name
+            municipality          = $candidate.municipality
+            location_municipality = $(if (-not [string]::IsNullOrWhiteSpace([string]$candidate.location_municipality)) { [string]$candidate.location_municipality } else { Get-MunicipalityFromAddress -Address ([string]$candidate.address) -FallbackMunicipality ([string]$candidate.municipality) })
+            address               = $candidate.address
+            phone                 = $candidate.phone
+            website               = $candidate.website
+            contact_form_url      = $candidate.contact_form_url
+            source_org            = $candidate.source_org
+            source_url            = $candidate.source_url
+            source_count          = $candidate.source_count
+            source_summary        = $candidate.source_summary
+            detail_source_url     = $candidate.detail_source_url
+            industry1             = $candidate.industry1
+            industry2             = $candidate.industry2
+            industry_fit          = $candidate.industry_fit
+            local_focus           = $candidate.local_focus
+            network_affinity      = $candidate.network_affinity
+            contactability        = $candidate.contactability
+            is_usable             = $usable.IsUsable
+            usable_reason         = $usable.Reason
+            priority_score        = $score.Score
+            priority_rank         = $score.Rank
+            score_reason          = $score.Reason
+            score_confidence      = $score.Confidence
+        })
+    }
+
+    return $outputRows
+}
+
+function Convert-CompanyMasterRowToSalesListRow {
+    param([pscustomobject]$Row)
+
+    [pscustomobject][ordered]@{
+        '所属団体名'               = [string]$Row.source_org
+        '企業名'                   = [string]$Row.company_name
+        '代表者氏名'               = [string]$Row.person_name
+        '所在地(市区町村まで)'     = $(if (-not [string]::IsNullOrWhiteSpace([string]$Row.location_municipality)) { [string]$Row.location_municipality } else { Get-MunicipalityFromAddress -Address ([string]$Row.address) -FallbackMunicipality ([string]$Row.municipality) })
+        '公式サイトURL'            = [string]$Row.website
+        '電話番号'                 = [string]$Row.phone
+        '問い合わせフォームURL'    = [string]$Row.contact_form_url
+        '業種1'                    = [string]$Row.industry1
+        '業種2'                    = [string]$Row.industry2
+        'priority_rank'            = [string]$Row.priority_rank
+        'priority_score'           = [string]$Row.priority_score
+        'address'                  = [string]$Row.address
+        'source_url'               = [string]$Row.source_url
+        'score_reason'             = [string]$Row.score_reason
+        'score_confidence'         = [string]$Row.score_confidence
+        'detail_source_url'        = [string]$Row.detail_source_url
+        'source_count'             = [string]$Row.source_count
+        'source_summary'           = [string]$Row.source_summary
+        'industry_fit'             = [string]$Row.industry_fit
+        'local_focus'              = [string]$Row.local_focus
+        'network_affinity'         = [string]$Row.network_affinity
+        'contactability'           = [string]$Row.contactability
+        'municipality_match'       = $(if ($null -ne $Row.PSObject.Properties['municipality_match']) { [string]$Row.municipality_match } else { "" })
+    }
+}
+
+function Invoke-BuildSalesListFromCompanyMaster {
+    param(
+        [string]$CompanyMasterFile,
+        [string]$AllOutputFile,
+        [string]$UsableOutputFile,
+        [string]$ReportOutputFile,
+        [string]$LogFile
+    )
+
+    $allRows = @(Import-Csv -Path $CompanyMasterFile | Sort-Object -Property @{ Expression = { [int]$_.priority_score }; Descending = $true }, municipality, company_name)
+    $usableRows = @($allRows | Where-Object {
+            $_.is_usable -eq "true" -and
+            (Test-AddressMatchesMunicipality -Municipality $_.municipality -Address $_.address) -and
+            (Test-WebUsableCompanyNameQuality -CompanyName $_.company_name) -and
+            (Test-WebUsableAddressQuality -Address $_.address)
+        } | ForEach-Object {
+            $_ | Add-Member -NotePropertyName municipality_match -NotePropertyValue "true" -Force
+            $_
+        })
+
+    $reportRows = @(
+        foreach ($group in ($allRows | Group-Object municipality | Sort-Object Name)) {
+            $rows = @($group.Group)
+            $usableRowsForMunicipality = @($rows | Where-Object {
+                    $_.is_usable -eq "true" -and
+                    (Test-AddressMatchesMunicipality -Municipality $_.municipality -Address $_.address) -and
+                    (Test-WebUsableCompanyNameQuality -CompanyName $_.company_name) -and
+                    (Test-WebUsableAddressQuality -Address $_.address)
+                })
+            [pscustomobject]@{
+                municipality       = $group.Name
+                total_count        = $rows.Count
+                usable_count       = $usableRowsForMunicipality.Count
+                top_rank_count     = @($rows | Where-Object { $_.priority_rank -eq "A" }).Count
+                contact_form_count = @($rows | Where-Object { -not [string]::IsNullOrWhiteSpace($_.contact_form_url) }).Count
+            }
+        }
+    )
+
+    Write-CsvBom -Rows @($allRows | ForEach-Object { Convert-CompanyMasterRowToSalesListRow -Row $_ }) -Path $AllOutputFile
+    Write-CsvBom -Rows @($usableRows | ForEach-Object { Convert-CompanyMasterRowToSalesListRow -Row $_ }) -Path $UsableOutputFile
+    Write-CsvBom -Rows $reportRows -Path $ReportOutputFile
+
+    Write-LogEntry -Level "info" -Message "build-sales-list-from-company-master completed: total=$($allRows.Count) usable=$($usableRows.Count) municipalities=$($reportRows.Count)" -Path $LogFile
+}
+
+function Convert-CompanyMasterRowToSalesListRow {
+    param([pscustomobject]$Row)
+
+    [pscustomobject][ordered]@{
+        '所属団体名'             = [string]$Row.source_org
+        '企業名'                 = [string]$Row.company_name
+        '代表者氏名'             = [string]$Row.person_name
+        '所在地(市区町村まで)'   = $(if (-not [string]::IsNullOrWhiteSpace([string]$Row.location_municipality)) { [string]$Row.location_municipality } else { Get-MunicipalityFromAddress -Address ([string]$Row.address) -FallbackMunicipality ([string]$Row.municipality) })
+        '公式サイトURL'          = [string]$Row.website
+        '電話番号'               = [string]$Row.phone
+        '問い合わせフォームURL' = [string]$Row.contact_form_url
+        '業種1'                  = [string]$Row.industry1
+        '業種2'                  = [string]$Row.industry2
+    }
+}
+
 $areasFile = Resolve-RepoPath -Path $AreasPath
 $contractedFile = Resolve-RepoPath -Path $ContractedPath
 $resolvedFile = Resolve-RepoPath -Path $ResolvedAreasPath
@@ -2872,6 +5052,7 @@ $scoringFile = Resolve-RepoPath -Path $ScoringPath
 $companyMasterFile = Resolve-RepoPath -Path $CompanyMasterPath
 $progressFile = Resolve-RepoPath -Path $ProgressReportPath
 $logFile = Resolve-RepoPath -Path $LogPath
+$script:CsvNormalizationLogPath = $logFile
 $realDirectory = Resolve-RepoPath -Path $RealDataDirectory
 $realResolvedFile = Resolve-RepoPath -Path $RealResolvedAreasPath
 $realSalesListFile = Resolve-RepoPath -Path $RealSalesListPath
@@ -2881,6 +5062,8 @@ $sourceRegistryFile = Resolve-RepoPath -Path $SourceRegistryPath
 $sourceWorksetFile = Resolve-RepoPath -Path $SourceWorksetPath
 $extractedMemberCandidatesFile = Resolve-RepoPath -Path $ExtractedMemberCandidatesPath
 $normalizedMemberCompaniesFile = Resolve-RepoPath -Path $NormalizedMemberCompaniesPath
+$resolvedMemberCompaniesFile = Resolve-RepoPath -Path $ResolvedMemberCompaniesPath
+$websiteResolutionCandidatesFile = Resolve-RepoPath -Path $WebsiteResolutionCandidatesPath
 $extractedCompanyDetailsFile = Resolve-RepoPath -Path $ExtractedCompanyDetailsPath
 $webSalesListFile = Resolve-RepoPath -Path $WebSalesListPath
 $webSalesUsableFile = Resolve-RepoPath -Path $WebSalesUsablePath
@@ -2913,11 +5096,14 @@ switch ($Command) {
     "normalize-member-candidates" {
         Invoke-NormalizeMemberCandidates -CandidatesFile $extractedMemberCandidatesFile -OutputFile $normalizedMemberCompaniesFile -LogFile $logFile
     }
+    "resolve-company-websites" {
+        Invoke-ResolveCompanyWebsites -MembersFile $normalizedMemberCompaniesFile -CandidatesOutputFile $websiteResolutionCandidatesFile -OutputFile $resolvedMemberCompaniesFile -TopCount $TopWebsiteCandidates -LogFile $logFile
+    }
     "extract-company-details" {
-        Invoke-ExtractCompanyDetails -MembersFile $normalizedMemberCompaniesFile -OutputFile $extractedCompanyDetailsFile -LogFile $logFile
+        Invoke-ExtractCompanyDetails -MembersFile $resolvedMemberCompaniesFile -OutputFile $extractedCompanyDetailsFile -LogFile $logFile
     }
     "run-web-pipeline" {
-        Invoke-RunWebPipeline -ResolvedFile $realResolvedFile -RegistryFile $sourceRegistryFile -WorksetFile $sourceWorksetFile -CandidatesFile $extractedMemberCandidatesFile -NormalizedMembersFile $normalizedMemberCompaniesFile -DetailsFile $extractedCompanyDetailsFile -CompanyMasterFile $companyMasterFile -AllOutputFile $webSalesListFile -UsableOutputFile $webSalesUsableFile -ReportOutputFile $webSalesReportFile -LogFile $logFile
+        Invoke-RunWebPipeline -ResolvedFile $realResolvedFile -RegistryFile $sourceRegistryFile -WorksetFile $sourceWorksetFile -CandidatesFile $extractedMemberCandidatesFile -NormalizedMembersFile $normalizedMemberCompaniesFile -ResolvedMembersFile $resolvedMemberCompaniesFile -WebsiteResolutionCandidatesFile $websiteResolutionCandidatesFile -DetailsFile $extractedCompanyDetailsFile -CompanyMasterFile $companyMasterFile -AllOutputFile $webSalesListFile -UsableOutputFile $webSalesUsableFile -ReportOutputFile $webSalesReportFile -TopWebsiteCandidateCount $TopWebsiteCandidates -LogFile $logFile
     }
     "discover-source-candidates" {
         Invoke-DiscoverSourceCandidates -Municipality $MunicipalityName -OutputFile $sourceDiscoveryFile -LogFile $logFile
@@ -2926,6 +5112,6 @@ switch ($Command) {
         Invoke-RegisterSourceCandidates -CandidatesFile $sourceDiscoveryFile -RegistryFile $sourceRegistryFile -Municipality $MunicipalityName -TopCount $TopSourceCandidates -LogFile $logFile
     }
     "bootstrap-web-pipeline" {
-        Invoke-BootstrapWebPipeline -Municipality $MunicipalityName -AreasFile $areasFile -BootstrapAreaFile $bootstrapAreaFile -ContractedFile $contractedFile -CandidatesFile $sourceDiscoveryFile -RegistryFile $sourceRegistryFile -TopCount $TopSourceCandidates -ResolvedFile $realResolvedFile -WorksetFile $sourceWorksetFile -ExtractedCandidatesFile $extractedMemberCandidatesFile -NormalizedMembersFile $normalizedMemberCompaniesFile -DetailsFile $extractedCompanyDetailsFile -CompanyMasterFile $companyMasterFile -AllOutputFile $webSalesListFile -UsableOutputFile $webSalesUsableFile -ReportOutputFile $webSalesReportFile -LogFile $logFile
+        Invoke-BootstrapWebPipeline -Municipality $MunicipalityName -AreasFile $areasFile -BootstrapAreaFile $bootstrapAreaFile -ContractedFile $contractedFile -CandidatesFile $sourceDiscoveryFile -RegistryFile $sourceRegistryFile -TopCount $TopSourceCandidates -ResolvedFile $realResolvedFile -WorksetFile $sourceWorksetFile -ExtractedCandidatesFile $extractedMemberCandidatesFile -NormalizedMembersFile $normalizedMemberCompaniesFile -ResolvedMembersFile $resolvedMemberCompaniesFile -WebsiteResolutionCandidatesFile $websiteResolutionCandidatesFile -DetailsFile $extractedCompanyDetailsFile -CompanyMasterFile $companyMasterFile -AllOutputFile $webSalesListFile -UsableOutputFile $webSalesUsableFile -ReportOutputFile $webSalesReportFile -TopWebsiteCandidateCount $TopWebsiteCandidates -LogFile $logFile
     }
 }
